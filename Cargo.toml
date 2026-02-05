@@ -1,0 +1,39 @@
+# File: Cargo.toml
+# Location: /Cargo.toml
+
+[package]
+name = "adwaita-network"
+version = "0.1.0"
+edition = "2021"
+description = "Modern network management application for GNOME"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/PlayRood32/adw-network"
+homepage = "https://github.com/PlayRood32/adw-network"
+authors = ["PlayRood"]
+
+[dependencies]
+gtk4 = { version = "0.10", features = ["v4_10"] }
+libadwaita = { version = "0.8", features = ["v1_6"] }
+gdk-pixbuf = "0.21"
+image = { version = "0.25", default-features = false, features = ["png"] }
+glib = "0.21"
+gio = "0.21"
+tokio = { version = "1", features = ["full", "process"] }
+anyhow = "1.0.101"
+rand = "0.9"
+qrcode = { version = "0.14", features = ["image"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+chrono = "0.4"
+tempfile = "3"
+hostname = "0.4"
+
+[lib]
+name = "adwaita_network"
+path = "src/lib.rs"
+
+[[bin]]
+name = "adwaita-network"
+path = "src/main.rs"
