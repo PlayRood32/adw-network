@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Adwaita Network
+Comment=Modern network management application built with libadwaita
+Icon=com.github.adw-network
+Exec=adwaita-network
+Terminal=false
+Categories=GNOME;GTK;Network;Settings;
+Keywords=wifi;wireless;network;hotspot;connection;
+StartupNotify=true

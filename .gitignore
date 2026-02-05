@@ -1,0 +1,29 @@
+# File: .gitignore
+# Location: /.gitignore
+
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build artifacts
+*.deb
+*.rpm
+*.pkg.tar.zst
