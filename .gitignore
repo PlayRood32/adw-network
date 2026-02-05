@@ -27,3 +27,5 @@ Thumbs.db
 *.deb
 *.rpm
 *.pkg.tar.zst
+adwaita-network-linux-x86_64.tar.gz
+adwaita-network-bin/
