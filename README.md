@@ -16,6 +16,14 @@ Clean WiFi and hotspot management with an Adwaita-native UI.
 
 ---
 
+## 🖼️ Screenshots
+
+<div align="center">
+  <img src="docs/images/screenshot-1.png" alt="WiFi Page" width="32%">
+  <img src="docs/images/screenshot-2.png" alt="Hotspot Page" width="32%">
+  <img src="docs/images/screenshot-3.png" alt="Devices Page" width="32%">
+</div>
+
 ## ✨ Features
 
 - WiFi scan, connect, and manage with signal quality indicators
@@ -69,7 +77,7 @@ This release focuses on UI/UX polish and stability across WiFi, hotspot, and dev
 
 ### 📦 From AUR (Arch Linux)
 ```bash
-yay -S adwaita-network-bin
+yay -S adw-network-bin
 ```
 
 ### ✅ Prerequisites
