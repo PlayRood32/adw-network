@@ -176,7 +176,17 @@ sudo install -Dm644 data/com.github.adw-network.desktop /usr share/applications/
 ## 🗂️ Project Structure
 ```
 ├── 📁 data
+│   ├── 📁 icons
+│   │   └── 📁 hicolor
+│   │       └── 📁 scalable
+│   │           └── 📁 apps
+│   │               └── 🖼️ icon.png
 │   └── 📄 com.github.adw-network.desktop
+├── 📁 docs
+│   └── 📁 images
+│       ├── 🖼️ screenshot-1.png
+│       ├── 🖼️ screenshot-2.png
+│       └── 🖼️ screenshot-3.png
 ├── 📁 src
 │   ├── 📁 ui
 │   │   ├── 🦀 devices_page.rs
@@ -193,6 +203,7 @@ sudo install -Dm644 data/com.github.adw-network.desktop /usr share/applications/
 │   └── 🦀 window.rs
 ├── ⚙️ .gitignore
 ├── ⚙️ Cargo.toml
+├── 📄 LICENSE
 └── 📝 README.md
 ```
 
