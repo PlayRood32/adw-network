@@ -1,6 +1,6 @@
 pkgname=adw-network-bin
 pkgver=0.1.2
-pkgrel=2
+pkgrel=3
 pkgdesc="Modern network management application for GNOME (prebuilt binary)"
 arch=('x86_64')
 url="https://github.com/PlayRood32/adw-network"
@@ -19,9 +19,9 @@ sha256sums=('2a10ff177d57a525958007572787f61bb90f25a16bf4fa126dbd7cf11833c80b'
 
 package() {
   local bin
-  bin="$(find "${srcdir}" -maxdepth 2 -type f -name 'adwaita-network' -perm -u+x | head -n 1)"
+  bin="$(find "${srcdir}" -maxdepth 2 -type f -perm -u+x | head -n 1)"
   if [[ -z "${bin}" ]]; then
-    printf 'error: adwaita-network binary not found in %s\n' "${srcdir}" >&2
+    printf 'error: binary not found in %s\n' "${srcdir}" >&2
     return 1
   fi
   install -Dm755 "${bin}" "${pkgdir}/usr/bin/adwaita-network"

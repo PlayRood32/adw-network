@@ -1,7 +1,7 @@
 pkgbase = adw-network-bin
 	pkgdesc = Modern network management application for GNOME (prebuilt binary)
 	pkgver = 0.1.2
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/PlayRood32/adw-network
 	arch = x86_64
 	license = GPL3
