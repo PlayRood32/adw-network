@@ -113,6 +113,7 @@ sudo apt install build-essential cargo libgtk-4-dev libadwaita-1-dev libgdk-pixb
 <details>
 <summary><b>Fedora</b></summary>
 sudo dnf groupinstall "Development Tools"
+
 sudo dnf install rust cargo gtk4-devel libadwaita-devel gdk-pixbuf2-devel NetworkManager pkg-config
 </details>
 
