@@ -126,6 +126,10 @@ cd adw-network
 cargo build --release
 
 # Install (see BUILD & RUN INSTRUCTIONS section for complete steps)
+sudo install -Dm755 target/release/adwaita-network /usr/bin/adwaita-network
+
+sudo install -Dm644 data/com.github.adw-network.desktop /usr share/applications/com.github.adw-network.desktop
+
 ```
 
 ---
