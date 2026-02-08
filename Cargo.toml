@@ -3,7 +3,7 @@
 
 [package]
 name = "adwaita-network"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "Modern network management application for GNOME"
 license = "GPL-3.0-or-later"
