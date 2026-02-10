@@ -258,7 +258,7 @@ impl AdwNetworkWindow {
     fn show_about_dialog(window: &adw::ApplicationWindow) {
         let about = adw::AboutDialog::builder()
             .application_name("Adwaita Network")
-            .application_icon("network-wireless-symbolic")
+            .application_icon("icon")
             .developer_name("PlayRood")
             .version("0.1.3")
             .comments("A modern network management application built with libadwaita")

@@ -2,7 +2,7 @@
 Type=Application
 Name=Adwaita Network
 Comment=Modern network management application built with libadwaita
-Icon=com.github.adw-network
+Icon=icon
 TryExec=adwaita-network
 Exec=adwaita-network
 Terminal=false
