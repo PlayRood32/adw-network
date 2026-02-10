@@ -1,32 +1,9 @@
 # File: .gitignore
 # Location: /.gitignore
 
-# Rust
 /target/
-**/*.rs.bk
-*.pdb
-
-# Cargo
 Cargo.lock
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
 *.log
-
-# Build artifacts
-*.deb
-*.rpm
 *.pkg.tar.zst
-adwaita-network-linux-x86_64.tar.gz
-adwaita-network-bin/
+*.tar.gz
 hi.md
