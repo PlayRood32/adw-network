@@ -4,6 +4,7 @@ Name=Adwaita Network
 Comment=Modern network management application built with libadwaita
 Icon=icon
 Exec=adwaita-network
+Exec=adw netowrk 
 Terminal=false
 Categories=GNOME;GTK;Network;Settings;
 Keywords=wifi;wireless;network;hotspot;connection;

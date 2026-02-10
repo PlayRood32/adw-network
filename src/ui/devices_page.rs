@@ -61,7 +61,7 @@ impl DevicesPage {
         let refresh_button = gtk4::Button::builder()
             .icon_name(icon_name(
                 "view-refresh-symbolic",
-                &["view-refresh", "reload-symbolic"],
+                &["view-refresh", "reload-symbolic"][..],
 
             ))
             .tooltip_text("Refresh devices")
@@ -95,7 +95,7 @@ impl DevicesPage {
             .icon_name(icon_name(
                 // "network-wireless-hotspot-symbolic",
                 "",
-                &["network-wireless-symbolic", "network-workgroup-symbolic", "computer"],
+                &["network-wireless-symbolic", "network-workgroup-symbolic", "computer"][..],
             ))
             .title("Waiting for devices to connect…")
             .description("Devices will appear here when they join your hotspot")
@@ -137,7 +137,7 @@ impl DevicesPage {
             // Show spinner
             btn.set_icon_name(icon_name(
                 "process-working-symbolic",
-                &["view-refresh-symbolic", "view-refresh"],
+                &["view-refresh-symbolic", "view-refresh"][..],
             ));
             
             glib::spawn_future_local(async move {
@@ -146,7 +146,7 @@ impl DevicesPage {
                 // Restore refresh icon
                 btn_clone.set_icon_name(icon_name(
                     "view-refresh-symbolic",
-                    &["view-refresh", "reload-symbolic"],
+                    &["view-refresh", "reload-symbolic"][..],
                 ));
             });
         });
@@ -323,7 +323,7 @@ impl DevicesPage {
             let mut subtitle_parts = Vec::new();
             match &device.hostname {
                 Some(_) => subtitle_parts.push(format!("{} • {}", device.ip, device.mac)),
-                None => subtitle_parts.push(device.mac.clone()),
+                _none => subtitle_parts.push(device.mac.clone()),
             }
 
             if let Some(expiry) = device.lease_expiry {
@@ -416,23 +416,23 @@ fn device_icon_name(device: &ConnectedDevice) -> &'static str {
                 "smartphone-symbolic",
                 "phone-apple-iphone-symbolic",
                 "multimedia-player-symbolic",
-            ],
+            ][..],
         ),
         DeviceKind::Tv => icon_name(
             "tv-symbolic",
-            &["display-symbolic", "video-display-symbolic", "computer-symbolic"],
+            &["display-symbolic", "video-display-symbolic", "computer-symbolic"][..],
         ),
         DeviceKind::Computer => icon_name(
             "computer-symbolic",
-            &["computer-apple-ipad-symbolic", "computer-old-symbolic"],
+            &["computer-apple-ipad-symbolic", "computer-old-symbolic"][..],
         ),
         DeviceKind::Iot => icon_name(
             "network-wireless-symbolic",
-            &["network-workgroup-symbolic", "network-transmit-receive-symbolic"],
+            &["network-workgroup-symbolic", "network-transmit-receive-symbolic"][..],
         ),
         DeviceKind::Unknown => icon_name(
             "network-wired-symbolic",
-            &["network-workgroup-symbolic", "network-transmit-receive-symbolic"],
+            &["network-workgroup-symbolic", "network-transmit-receive-symbolic"][..],
         ),
     }
 }
@@ -621,7 +621,7 @@ fn parse_oui_content(content: &str, map: &mut HashMap<String, String>) {
 
         let oui = match normalize_oui(prefix) {
             Some(oui) => oui,
-            None => continue,
+            _none => continue,
         };
         let vendor = vendor.trim();
         if !vendor.is_empty() {

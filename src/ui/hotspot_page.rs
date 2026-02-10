@@ -10,13 +10,16 @@ use crate::hotspot;
 use crate::qr_dialog;
 use crate::ui::icon_name;
 use crate::window::AppPrefs;
-use rand::Rng;
 use rand::distr::Alphanumeric;
+use rand::RngExt;
 use rand::seq::SliceRandom;
 
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+const MIN_PASSWORD_LEN: usize = 8;
+const MAX_PASSWORD_LEN: usize = 63;
 
 const QR_CODE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#000000">
   <path d="M120-520v-320h320v320H120Zm80-80h160v-160H200v160Zm-80 480v-320h320v320H120Zm80-80h160v-160H200v160Zm320-320v-320h320v320H520Zm80-80h160v-160H600v160Zm160 480v-80h80v80h-80ZM520-360v-80h80v80h-80Zm80 80v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm80 80v-80h80v80h-80Zm80-80v-80h80v80h-80Zm0-160v-80h80v80h-80Zm80 80v-80h80v80h-80Z"/>
@@ -83,7 +86,7 @@ impl HotspotPage {
             &[
                 "network-wireless-symbolic",
                 "network-wireless-signal-excellent-symbolic",
-            ],
+            ][..],
         ));
         status_icon.set_pixel_size(100);
         status_icon.add_css_class("hotspot-icon");
@@ -133,7 +136,7 @@ impl HotspotPage {
                 Ok(texture) => gtk4::Image::from_paintable(Some(&texture)),
                 Err(_) => gtk4::Image::from_icon_name(icon_name(
                     "qr-code-symbolic",
-                    &["view-qr-symbolic", "view-qr", "view-qr-code-symbolic"],
+                    &["view-qr-symbolic", "view-qr", "view-qr-code-symbolic"][..],
                 )),
             }
         };
@@ -173,7 +176,7 @@ impl HotspotPage {
         let generate_button = gtk4::Button::builder()
             .icon_name(icon_name(
                 "view-refresh-symbolic",
-                &["view-refresh", "reload-symbolic"],
+                &["view-refresh", "reload-symbolic"][..],
             ))
             .valign(gtk4::Align::Center)
             .tooltip_text("Generate password")
@@ -230,7 +233,14 @@ impl HotspotPage {
         let length_row = adw::ActionRow::builder()
             .title("Password length")
             .build();
-        let length_adjustment = gtk4::Adjustment::new(16.0, 8.0, 4096.0, 1.0, 4.0, 0.0);
+        let length_adjustment = gtk4::Adjustment::new(
+            16.0,
+            MIN_PASSWORD_LEN as f64,
+            MAX_PASSWORD_LEN as f64,
+            1.0,
+            4.0,
+            0.0,
+        );
         let length_spin = gtk4::SpinButton::builder()
             .adjustment(&length_adjustment)
             .numeric(true)
@@ -258,7 +268,7 @@ impl HotspotPage {
         strength_row.add_suffix(&strength_box);
 
         // Advanced Settings
-        let band_model = gtk4::StringList::new(&["2.4 GHz", "5 GHz", "Auto"]);
+        let band_model = gtk4::StringList::new(&["2.4 GHz", "5 GHz", "Auto"][..]);
         let band_combo = adw::ComboRow::builder()
             .title("Frequency Band")
             .model(&band_model)
@@ -270,7 +280,7 @@ impl HotspotPage {
             .subtitle("Network won't be visible in WiFi lists")
             .build();
 
-        let interface_model = gtk4::StringList::new(&["wlan0"]);
+        let interface_model = gtk4::StringList::new(&["wlan0"][..]);
         let interface_combo = adw::ComboRow::builder()
             .title("Network Interface")
             .model(&interface_model)
@@ -296,6 +306,7 @@ impl HotspotPage {
         let devices = Rc::new(RefCell::new(Vec::new()));
         let is_active = Rc::new(Cell::new(false));
         let operation_in_progress = Rc::new(Cell::new(false));
+        let password_adjusting = Rc::new(Cell::new(false));
 
         let page = Self {
             widget,
@@ -351,12 +362,20 @@ impl HotspotPage {
         let toast_overlay_clone = page.toast_overlay.clone();
         generate_button.connect_clicked(move |_| {
             let len = length_spin_clone.value_as_int();
-            let target = if len <= 0 { 8 } else { len };
-            if target < 8 {
+            let target = if len <= 0 { MIN_PASSWORD_LEN as i32 } else { len };
+            if target < MIN_PASSWORD_LEN as i32 {
                 let toast = adw::Toast::new("Length must be at least 8 characters");
                 toast_overlay_clone.add_toast(toast);
                 return;
             }
+            let target = if target as usize > MAX_PASSWORD_LEN {
+                let toast = adw::Toast::new("Maximum length is 63 characters");
+                toast_overlay_clone.add_toast(toast);
+                length_spin_clone.set_value(MAX_PASSWORD_LEN as f64);
+                MAX_PASSWORD_LEN as i32
+            } else {
+                target
+            };
             set_generated(
                 target as usize,
                 true,
@@ -451,10 +470,22 @@ impl HotspotPage {
         let strength_label_clone = strength_label.clone();
         let strength_bar_clone = strength_bar.clone();
         let page_ref = page.clone_ref();
+        let password_adjusting = password_adjusting.clone();
         password_entry.connect_changed(move |entry| {
+            if password_adjusting.get() {
+                return;
+            }
             let text = entry.text();
-            revealed_label_clone.set_text(&text);
-            update_strength_indicator(&text, &strength_label_clone, &strength_bar_clone);
+            let mut value = text.to_string();
+            if value.chars().count() > MAX_PASSWORD_LEN {
+                let truncated: String = value.chars().take(MAX_PASSWORD_LEN).collect();
+                password_adjusting.set(true);
+                entry.set_text(&truncated);
+                password_adjusting.set(false);
+                value = truncated;
+            }
+            revealed_label_clone.set_text(&value);
+            update_strength_indicator(&value, &strength_label_clone, &strength_bar_clone);
             let page = page_ref.clone_ref();
             glib::spawn_future_local(async move {
                 page.save_configuration_if_inactive().await;
@@ -800,7 +831,7 @@ impl HotspotPage {
             let ip = hotspot::get_hotspot_ip().await.ok().flatten();
             let meta = match ip {
                 Some(ip) => format!("Share internet from: {} • Hotspot IP: {}", iface, ip),
-                None => format!("Share internet from: {}", iface),
+                _none => format!("Share internet from: {}", iface),
             };
             status_meta.set_text(&meta);
         });
@@ -863,7 +894,9 @@ fn update_strength_indicator(
         (len as f64) * (pool_size as f64).log2()
     };
 
-    let (text, class) = if len < 8 || variety <= 1 {
+    let (text, class) = if len > MAX_PASSWORD_LEN {
+        ("Too long", "strength-weak")
+    } else if len < MIN_PASSWORD_LEN || variety <= 1 {
         ("Weak", "strength-weak")
     } else if variety < 4 {
         ("Medium", "strength-medium")
@@ -881,7 +914,7 @@ fn update_strength_indicator(
     bar.remove_css_class("strength-very-strong");
     bar.add_css_class(class);
 
-    let fraction = if entropy <= 0.0 {
+    let fraction = if entropy <= 0.0 || len > MAX_PASSWORD_LEN {
         0.0
     } else {
         (entropy / 80.0).min(1.0)
@@ -892,6 +925,7 @@ fn update_strength_indicator(
 }
 
 fn generate_password(len: usize, include_symbols: bool) -> String {
+    let len = len.min(MAX_PASSWORD_LEN);
     if len == 0 {
         return String::new();
     }

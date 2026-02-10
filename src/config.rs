@@ -14,6 +14,42 @@ pub struct HotspotConfig {
     pub hidden: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    pub color_scheme: String,
+    #[serde(default = "default_auto_scan")]
+    pub auto_scan: bool,
+    #[serde(default = "default_expand_connected_details")]
+    pub expand_connected_details: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            color_scheme: "system".to_string(),
+            auto_scan: true,
+            expand_connected_details: false,
+        }
+    }
+}
+
+impl AppSettings {
+    pub fn validate(&self) -> Result<()> {
+        match self.color_scheme.as_str() {
+            "system" | "light" | "dark" => Ok(()),
+            _ => anyhow::bail!("Invalid color scheme"),
+        }
+    }
+}
+
+fn default_auto_scan() -> bool {
+    true
+}
+
+fn default_expand_connected_details() -> bool {
+    false
+}
+
 impl Default for HotspotConfig {
     fn default() -> Self {
         let hostname = hostname::get()
@@ -87,6 +123,32 @@ pub fn hotspot_config_path() -> PathBuf {
     std::env::var("HOME")
         .map(|home| PathBuf::from(home).join(".config/adw-network/hotspot.json"))
         .unwrap_or_else(|_| PathBuf::from("/tmp/adw-network-hotspot.json"))
+}
+
+pub fn load_app_settings(path: &std::path::Path) -> Result<AppSettings> {
+    let content = std::fs::read_to_string(path)?;
+    let settings: AppSettings = serde_json::from_str(&content)?;
+    settings.validate()?;
+    Ok(settings)
+}
+
+pub fn save_app_settings(path: &std::path::Path, settings: &AppSettings) -> Result<()> {
+    settings.validate()?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let json = serde_json::to_string_pretty(settings)?;
+    std::fs::write(path, json)?;
+
+    Ok(())
+}
+
+pub fn app_settings_path() -> PathBuf {
+    std::env::var("HOME")
+        .map(|home| PathBuf::from(home).join(".config/adw-network/settings.json"))
+        .unwrap_or_else(|_| PathBuf::from("/tmp/adw-network-settings.json"))
 }
 
 #[cfg(test)]

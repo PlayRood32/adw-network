@@ -184,7 +184,8 @@ impl WifiPage {
 
         let details_revealer = gtk4::Revealer::new();
         details_revealer.set_transition_type(gtk4::RevealerTransitionType::Crossfade);
-        details_revealer.set_reveal_child(false);
+        let expand_connected_details = prefs.borrow().expand_connected_details;
+        details_revealer.set_reveal_child(expand_connected_details);
 
         let details_clamp = adw::Clamp::builder()
             .maximum_size(520)
@@ -298,6 +299,8 @@ impl WifiPage {
             connected_network,
             prefs,
         };
+
+        page.apply_expand_details_setting(expand_connected_details);
 
         // Connected details toggle
         let page_ref = page.clone_ref();
@@ -421,7 +424,7 @@ impl WifiPage {
         let page_ref = page.clone_ref();
         glib::timeout_add_seconds_local(10, move || {
             let page = page_ref.clone_ref();
-            if page.wifi_switch.is_active() {
+            if page.wifi_switch.is_active() && page.prefs.borrow().auto_scan {
                 glib::spawn_future_local(async move {
                     page.refresh_networks().await;
                 });
@@ -692,6 +695,9 @@ impl WifiPage {
             signal_text, network.band, network.channel
         );
         self.connected_subtitle.set_text(&subtitle);
+        if self.prefs.borrow().expand_connected_details {
+            self.apply_expand_details_setting(true);
+        }
     }
 
     fn refresh_connected_details(&self) {
@@ -734,6 +740,13 @@ impl WifiPage {
             self.connected_details_ip.set_text("IP: —");
             self.connected_details_dns.set_text("DNS: —");
             self.connected_details_speed.set_text("Speed: —");
+        }
+    }
+
+    pub fn apply_expand_details_setting(&self, enabled: bool) {
+        self.connected_details_revealer.set_reveal_child(enabled);
+        if enabled {
+            self.refresh_connected_details();
         }
     }
 
