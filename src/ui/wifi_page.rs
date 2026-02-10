@@ -138,7 +138,7 @@ impl WifiPage {
         let refresh_button = gtk4::Button::builder()
             .icon_name(icon_name(
                 "view-refresh-symbolic",
-                &["view-refresh", "reload-symbolic"],
+                &["view-refresh", "reload-symbolic"][..],
             ))
             .tooltip_text("Refresh networks")
             .css_classes(vec![
@@ -246,7 +246,7 @@ impl WifiPage {
         let empty_state = adw::StatusPage::builder()
             .icon_name(icon_name(
                 "network-wireless-disabled-symbolic",
-                &["network-wireless-symbolic", "network-wireless-offline-symbolic"],
+                &["network-wireless-symbolic", "network-wireless-offline-symbolic"][..],
             ))
             .title("No Networks Found")
             .description("Turn on Wi-Fi or refresh to scan for networks")
@@ -773,14 +773,14 @@ impl WifiPage {
                 format!("{} • {} • {}", signal_text, network.band, channel_text)
             }
         };
-        row.set_subtitle(&subtitle);
+        row.set_subtitle(&subtitle[..]);
 
         // Signal icon
         let signal_icon = gtk4::Image::new();
         let signal_icon_name = get_signal_icon(network.signal);
         signal_icon.set_icon_name(Some(icon_name(
             signal_icon_name,
-            &["network-wireless-symbolic", "network-wireless"],
+            &["network-wireless-symbolic", "network-wireless"][..],
         )));
         signal_icon.set_pixel_size(24);
         row.add_prefix(&signal_icon);
@@ -792,7 +792,7 @@ impl WifiPage {
             let security_icon = gtk4::Image::new();
             security_icon.set_icon_name(Some(icon_name(
                 "changes-prevent-symbolic",
-                &["emblem-readonly-symbolic", "changes-allow-symbolic"],
+                &["emblem-readonly-symbolic", "changes-allow-symbolic"][..],
             )));
             security_icon.set_pixel_size(16);
             security_icon.set_opacity(0.7);
@@ -804,7 +804,7 @@ impl WifiPage {
             let connected_icon = gtk4::Image::new();
             connected_icon.set_icon_name(Some(icon_name(
                 "emblem-ok-symbolic",
-                &["emblem-default-symbolic", "object-select-symbolic"],
+                &["emblem-default-symbolic", "object-select-symbolic"][..],
             )));
             connected_icon.set_pixel_size(16);
             row.add_suffix(&connected_icon);
@@ -972,7 +972,7 @@ impl WifiPage {
         let forget_content = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         let forget_icon = gtk4::Image::from_icon_name(icon_name(
             "user-trash-symbolic",
-            &["user-trash", "edit-delete-symbolic"],
+            &["user-trash", "edit-delete-symbolic"][..],
         ));
         forget_icon.set_pixel_size(22);
         forget_icon.add_css_class("forget-icon");
@@ -1455,7 +1455,7 @@ impl WifiPage {
         let back_button = gtk4::Button::builder()
             .icon_name(icon_name(
                 "go-previous-symbolic",
-                &["go-previous", "go-back-symbolic"],
+                &["go-previous", "go-back-symbolic"][..],
             ))
             .tooltip_text("Back")
             .css_classes(vec!["flat".to_string()])
@@ -1486,7 +1486,7 @@ impl WifiPage {
         let wifi_icon = gtk4::Image::new();
         wifi_icon.set_icon_name(Some(icon_name(
             get_signal_icon(network.signal),
-            &["network-wireless-symbolic", "network-wireless"],
+            &["network-wireless-symbolic", "network-wireless"][..],
         )));
         wifi_icon.set_pixel_size(64);
 
@@ -1537,9 +1537,9 @@ impl WifiPage {
         if is_saved {
             let forget_button = build_action_button(
                 "user-trash-symbolic",
-                &["user-trash", "edit-delete-symbolic"],
+                &["user-trash", "edit-delete-symbolic"][..],
                 "Forget",
-                &["action-pill", "forget"],
+                &["action-pill", "forget"][..],
             );
 
             let page_forget = self.clone_ref();
@@ -1558,9 +1558,9 @@ impl WifiPage {
         if network.connected {
             let disconnect_button = build_action_button(
                 "network-offline-symbolic",
-                &["window-close-symbolic", "process-stop-symbolic"],
+                &["window-close-symbolic", "process-stop-symbolic"][..],
                 "Disconnect",
-                &["action-pill", "disconnect"],
+                &["action-pill", "disconnect"][..],
             );
 
             let page_disc = self.clone_ref();
@@ -1650,7 +1650,7 @@ impl WifiPage {
             let icon_widget = gtk4::Image::new();
             icon_widget.set_icon_name(Some(icon_name(
                 icon,
-                &["network-wireless-symbolic", "network-wireless"],
+                &["network-wireless-symbolic", "network-wireless"][..],
             )));
             icon_widget.set_pixel_size(24);
             icon_widget.set_opacity(0.7);
