@@ -831,7 +831,7 @@ impl HotspotPage {
             let ip = hotspot::get_hotspot_ip().await.ok().flatten();
             let meta = match ip {
                 Some(ip) => format!("Share internet from: {} • Hotspot IP: {}", iface, ip),
-                _none => format!("Share internet from: {}", iface),
+                std::prelude::v1::None => format!("Share internet from: {}", iface),
             };
             status_meta.set_text(&meta);
         });

@@ -155,7 +155,7 @@ pub async fn scan_networks() -> Result<Vec<WifiNetwork>> {
 
         let key = (ssid, band);
         match networks_by_key.get_mut(&key) {
-            None => {
+            std::prelude::v1::None => {
                 networks_by_key.insert(key, network);
             }
             Some(existing) => {
@@ -192,7 +192,7 @@ pub async fn get_network_info(ssid: &str) -> Result<NetworkInfo> {
 
     // Pull what we can from a saved connection profile (if it exists).
     // This may fail for networks that aren't saved; that's OK.
-    if let Ok(connection_map) = nmcli_key_value_map(&["-t", "connection", "show", ssid]).await {
+    if let Ok(connection_map) = nmcli_key_value_map(&["-t", "connection", "show", ssid][..]).await {
         info.connection_type = connection_map
             .get("connection.type")
             .cloned()
@@ -218,7 +218,7 @@ pub async fn get_network_info(ssid: &str) -> Result<NetworkInfo> {
     // Pull runtime IP/DNS/DHCP info from the active device (if connected).
     if let Ok(Some(device)) = get_device_for_active_ssid(ssid).await {
         if let Ok(device_map) =
-            nmcli_key_value_map(&["-t", "-f", "GENERAL,IP4,IP6,DHCP4", "device", "show", &device])
+            nmcli_key_value_map(&["-t", "-f", "GENERAL,IP4,IP6,DHCP4", "device", "show", &device][..])
                 .await
         {
             // If the saved profile name doesn't match the SSID, we can still enrich details
@@ -285,7 +285,7 @@ pub async fn get_network_info(ssid: &str) -> Result<NetworkInfo> {
                 if info.uuid.is_none() || info.connection_type.is_none() || info.mac_address.is_none()
                 {
                     if let Ok(connection_map) =
-                        nmcli_key_value_map(&["-t", "connection", "show", conn_name]).await
+                        nmcli_key_value_map(&["-t", "connection", "show", conn_name][..]).await
                     {
                         info.connection_type = info
                             .connection_type

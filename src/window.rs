@@ -175,7 +175,7 @@ impl AdwNetworkWindow {
                         status_pill.add_css_class("status-online");
                         return;
                     }
-                    Ok(_none) => {}
+                    Ok(std::prelude::v1::None) => {}
                     Err(e) => {
                         log::warn!("Failed to update wired status: {}", e);
                     }
@@ -191,7 +191,7 @@ impl AdwNetworkWindow {
                         status_pill.set_tooltip_text(Some(&format!("Connected to {}", ssid)));
                         status_pill.add_css_class("status-online");
                     }
-                    Ok(_none) => {
+                    Ok(std::prelude::v1::None) => {
                         let wifi_enabled = nm::is_wifi_enabled().await.unwrap_or(false);
                         if wifi_enabled {
                             status_icon.set_icon_name(Some(icon_name(

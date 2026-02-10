@@ -323,7 +323,7 @@ impl DevicesPage {
             let mut subtitle_parts = Vec::new();
             match &device.hostname {
                 Some(_) => subtitle_parts.push(format!("{} • {}", device.ip, device.mac)),
-                _none => subtitle_parts.push(device.mac.clone()),
+                std::prelude::v1::None => subtitle_parts.push(device.mac.clone()),
             }
 
             if let Some(expiry) = device.lease_expiry {
@@ -621,7 +621,7 @@ fn parse_oui_content(content: &str, map: &mut HashMap<String, String>) {
 
         let oui = match normalize_oui(prefix) {
             Some(oui) => oui,
-            _none => continue,
+            std::prelude::v1::None => continue,
         };
         let vendor = vendor.trim();
         if !vendor.is_empty() {

@@ -19,7 +19,7 @@ pub async fn show_qr_dialog(
         format!("WIFI:T:WPA;S:{};P:{};;", ssid, password)
     };
 
-    let qr_result = qr::generate_bytes_for_pixbuf(&wifi_string);
+    let qr_result = qr::generate_bytes_for_pixbuf(&wifi_string[..]);
 
     match qr_result {
         Ok((bytes, width, height)) => {
