@@ -2,10 +2,11 @@
 Type=Application
 Name=Adwaita Network
 Comment=Modern network management application built with libadwaita
-Icon=icon
+Icon=com.github.adw-network
+TryExec=adwaita-network
 Exec=adwaita-network
-Exec=adw netowrk 
 Terminal=false
 Categories=GNOME;GTK;Network;Settings;
-Keywords=wifi;wireless;network;hotspot;connection;
+Keywords=wifi;hotspot;network;adw;adw network;adw-network;
 StartupNotify=true
+StartupWMClass=com.github.adw-network
