@@ -5,8 +5,10 @@ use gtk4::prelude::*;
 use gtk4::glib;
 use libadwaita::{self as adw, prelude::*};
 
-use crate::config::{self, HotspotConfig};
+use crate::config::{self, HotspotConfig, HotspotPasswordStorage};
 use crate::hotspot;
+use crate::nm;
+use crate::secrets;
 use crate::qr_dialog;
 use crate::ui::icon_name;
 use crate::window::AppPrefs;
@@ -56,6 +58,8 @@ pub struct HotspotPage {
     strength_bar: gtk4::ProgressBar,
     devices: Rc<RefCell<Vec<String>>>,
     is_active: Rc<Cell<bool>>,
+    wifi_present: Rc<Cell<bool>>,
+    wifi_enabled: Rc<Cell<bool>>,
     prefs: Rc<RefCell<AppPrefs>>,
     operation_in_progress: Rc<Cell<bool>>,
 }
@@ -280,7 +284,7 @@ impl HotspotPage {
             .subtitle("Network won't be visible in WiFi lists")
             .build();
 
-        let interface_model = gtk4::StringList::new(&["wlan0"][..]);
+        let interface_model = gtk4::StringList::new(&[][..]);
         let interface_combo = adw::ComboRow::builder()
             .title("Network Interface")
             .model(&interface_model)
@@ -305,6 +309,8 @@ impl HotspotPage {
 
         let devices = Rc::new(RefCell::new(Vec::new()));
         let is_active = Rc::new(Cell::new(false));
+        let wifi_present = Rc::new(Cell::new(false));
+        let wifi_enabled = Rc::new(Cell::new(false));
         let operation_in_progress = Rc::new(Cell::new(false));
         let password_adjusting = Rc::new(Cell::new(false));
 
@@ -330,14 +336,18 @@ impl HotspotPage {
             strength_bar: strength_bar.clone(),
             devices,
             is_active,
+            wifi_present,
+            wifi_enabled,
             prefs,
             operation_in_progress,
         };
 
+        page.set_wifi_state(false, false);
+
         // Load configuration and check status
         let page_ref = page.clone_ref();
         glib::spawn_future_local(async move {
-            page_ref.load_config();
+            page_ref.load_config().await;
             page_ref.load_interfaces().await;
             page_ref.refresh_status().await;
         });
@@ -577,6 +587,17 @@ impl HotspotPage {
             glib::ControlFlow::Continue
         });
 
+        // Refresh Wi-Fi interfaces periodically to handle hot-plug/unplug
+        let page_ref = page.clone_ref();
+        glib::timeout_add_seconds_local(3, move || {
+            let page = page_ref.clone_ref();
+            glib::spawn_future_local(async move {
+                page.load_interfaces().await;
+                page.refresh_status().await;
+            });
+            glib::ControlFlow::Continue
+        });
+
         page
     }
 
@@ -603,19 +624,23 @@ impl HotspotPage {
             strength_bar: self.strength_bar.clone(),
             devices: self.devices.clone(),
             is_active: self.is_active.clone(),
+            wifi_present: self.wifi_present.clone(),
+            wifi_enabled: self.wifi_enabled.clone(),
             prefs: self.prefs.clone(),
             operation_in_progress: self.operation_in_progress.clone(),
         }
     }
 
-    fn load_config(&self) {
+    async fn load_config(&self) {
+        let storage = self.load_password_storage();
         match config::load_config(&config::hotspot_config_path()) {
             Ok(config) => {
                 self.ssid_entry.set_text(&config.ssid);
-                self.password_entry.set_text(&config.password);
-                self.revealed_password_label.set_text(&config.password);
+                let password = self.resolve_password_for_storage(&storage, Some(&config)).await;
+                self.password_entry.set_text(&password);
+                self.revealed_password_label.set_text(&password);
                 update_strength_indicator(
-                    &config.password,
+                    &password,
                     &self.strength_label,
                     &self.strength_bar,
                 );
@@ -625,9 +650,11 @@ impl HotspotPage {
             Err(_) => {
                 let config = HotspotConfig::default();
                 self.ssid_entry.set_text(&config.ssid);
-                self.revealed_password_label.set_text(&config.password);
+                let password = self.resolve_password_for_storage(&storage, None).await;
+                self.password_entry.set_text(&password);
+                self.revealed_password_label.set_text(&password);
                 update_strength_indicator(
-                    &config.password,
+                    &password,
                     &self.strength_label,
                     &self.strength_bar,
                 );
@@ -657,7 +684,14 @@ impl HotspotPage {
             return;
         }
 
-        if let Err(e) = config::save_config(&config::hotspot_config_path(), &config) {
+        let storage = self.load_password_storage();
+        if let Err(e) = self.persist_password_for_storage(&storage, &config.password) {
+            log::error!("Failed to store hotspot password: {}", e);
+            self.show_toast(&format!("Failed to store hotspot password: {}", e));
+        }
+
+        let config_to_save = Self::config_for_storage(&config, &storage);
+        if let Err(e) = config::save_config(&config::hotspot_config_path(), &config_to_save) {
             log::error!("Failed to save configuration: {}", e);
             self.show_toast(&format!("Failed to save configuration: {}", e));
         }
@@ -668,14 +702,41 @@ impl HotspotPage {
             return;
         }
 
+        if !self.wifi_present.get() {
+            self.show_toast("No Wi-Fi adapter found");
+            self.hotspot_switch.set_active(false);
+            return;
+        }
+        if !self.wifi_enabled.get() {
+            self.show_toast("Wi-Fi is off");
+            self.hotspot_switch.set_active(false);
+            return;
+        }
+
         self.operation_in_progress.set(true);
         self.status_label.set_text("Starting hotspot…");
         self.status_icon.add_css_class("spinning");
 
         // First save the configuration
+        let storage = self.load_password_storage();
+        let mut password = self.password_entry.text().to_string();
+        if password.is_empty() {
+            let resolved = self.resolve_password_for_storage(&storage, None).await;
+            if !resolved.is_empty() {
+                password = resolved;
+                self.password_entry.set_text(&password);
+                self.revealed_password_label.set_text(&password);
+                update_strength_indicator(
+                    &password,
+                    &self.strength_label,
+                    &self.strength_bar,
+                );
+            }
+        }
+
         let config = HotspotConfig {
             ssid: self.ssid_entry.text().to_string(),
-            password: self.password_entry.text().to_string(),
+            password,
             band: match self.band_combo.selected() {
                 0 => "2.4 GHz".to_string(),
                 1 => "5 GHz".to_string(),
@@ -698,7 +759,9 @@ impl HotspotPage {
 
         match hotspot::create_hotspot_on(&config, interface).await {
             Ok(_) => {
-                let _ = config::save_config(&config::hotspot_config_path(), &config);
+                let _ = self.persist_password_for_storage(&storage, &config.password);
+                let config_to_save = Self::config_for_storage(&config, &storage);
+                let _ = config::save_config(&config::hotspot_config_path(), &config_to_save);
                 self.is_active.set(true);
                 self.show_toast("Hotspot started successfully");
                 self.update_ui();
@@ -750,6 +813,13 @@ impl HotspotPage {
     }
 
     async fn refresh_status(&self) {
+        if !self.wifi_present.get() {
+            self.is_active.set(false);
+            self.hotspot_switch.set_active(false);
+            self.update_ui();
+            return;
+        }
+
         match hotspot::is_hotspot_active().await {
             Ok(active) => {
                 self.is_active.set(active);
@@ -766,20 +836,71 @@ impl HotspotPage {
     }
 
     async fn load_interfaces(&self) {
-        if let Ok(ifaces) = hotspot::get_wifi_devices().await {
-            if !ifaces.is_empty() {
+        let present = nm::is_wifi_present().await.unwrap_or(false);
+        let enabled = nm::is_wifi_enabled().await.unwrap_or(false);
+
+        match hotspot::get_wifi_devices().await {
+            Ok(ifaces) if !ifaces.is_empty() => {
                 *self.devices.borrow_mut() = ifaces.clone();
                 let model = gtk4::StringList::new(
                     &ifaces.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                 );
                 self.interface_combo.set_model(Some(&model));
                 self.interface_combo.set_selected(0);
+                self.set_wifi_state(present, enabled);
                 log::info!("Loaded {} WiFi interfaces, selected: {}", ifaces.len(), &ifaces[0]);
+            }
+            Ok(_) | Err(_) => {
+                *self.devices.borrow_mut() = Vec::new();
+                let empty_model = gtk4::StringList::new(&[][..]);
+                self.interface_combo.set_model(Some(&empty_model));
+                self.set_wifi_state(present, enabled);
             }
         }
     }
 
+    fn set_wifi_state(&self, present: bool, enabled: bool) {
+        self.wifi_present.set(present);
+        self.wifi_enabled.set(enabled);
+        self.hotspot_switch.set_sensitive(present && enabled);
+        self.config_group.set_sensitive(present && enabled);
+        self.interface_combo.set_sensitive(present);
+        self.qr_button.set_visible(present && enabled && self.is_active.get());
+
+        if !present {
+            self.devices.borrow_mut().clear();
+            let empty_model = gtk4::StringList::new(&[][..]);
+            self.interface_combo.set_model(Some(&empty_model));
+            self.hotspot_switch.set_active(false);
+        }
+
+        self.update_ui();
+    }
+
     fn update_ui(&self) {
+        if !self.wifi_present.get() {
+            self.status_label.set_text("No Wi-Fi adapter found");
+            self.status_label.remove_css_class("hotspot-active-header");
+            self.status_icon.remove_css_class("hotspot-pulse");
+            self.status_subtitle.set_visible(false);
+            self.status_meta.set_visible(false);
+            self.status_subtitle.set_text("");
+            self.status_meta.set_text("");
+            self.qr_button.set_visible(false);
+            return;
+        }
+        if !self.wifi_enabled.get() {
+            self.status_label.set_text("Wi-Fi is off");
+            self.status_label.remove_css_class("hotspot-active-header");
+            self.status_icon.remove_css_class("hotspot-pulse");
+            self.status_subtitle.set_visible(false);
+            self.status_meta.set_visible(false);
+            self.status_subtitle.set_text("");
+            self.status_meta.set_text("");
+            self.qr_button.set_visible(false);
+            return;
+        }
+
         let active = self.is_active.get();
 
         if active {
@@ -839,7 +960,8 @@ impl HotspotPage {
 
     async fn show_qr(&self) {
         let ssid = self.ssid_entry.text().to_string();
-        let password = self.password_entry.text().to_string();
+        let storage = self.load_password_storage();
+        let password = self.resolve_password_for_storage(&storage, None).await;
 
         qr_dialog::show_qr_dialog(&ssid, &password, 200, &self.toast_overlay).await;
     }
@@ -847,6 +969,67 @@ impl HotspotPage {
     fn show_toast(&self, message: &str) {
         let toast = adw::Toast::new(message);
         self.toast_overlay.add_toast(toast);
+    }
+
+    fn load_password_storage(&self) -> HotspotPasswordStorage {
+        config::load_app_settings(&config::app_settings_path())
+            .map(|s| s.hotspot_password_storage)
+            .unwrap_or(HotspotPasswordStorage::Keyring)
+    }
+
+    async fn resolve_password_for_storage(
+        &self,
+        storage: &HotspotPasswordStorage,
+        config: Option<&HotspotConfig>,
+    ) -> String {
+        let entry_password = self.password_entry.text().to_string();
+        if !entry_password.is_empty() {
+            return entry_password;
+        }
+
+        match storage {
+            HotspotPasswordStorage::PlainJson => {
+                config.map(|c| c.password.clone()).unwrap_or_default()
+            }
+            HotspotPasswordStorage::Keyring => match secrets::load_hotspot_password() {
+                Ok(Some(password)) => password,
+                _ => config.map(|c| c.password.clone()).unwrap_or_default(),
+            },
+            HotspotPasswordStorage::NetworkManager => {
+                match nm::get_saved_password_for_ssid("Hotspot").await {
+                    Ok(password) => password,
+                    Err(_) => config.map(|c| c.password.clone()).unwrap_or_default(),
+                }
+            }
+        }
+    }
+
+    fn persist_password_for_storage(
+        &self,
+        storage: &HotspotPasswordStorage,
+        password: &str,
+    ) -> anyhow::Result<()> {
+        match storage {
+            HotspotPasswordStorage::PlainJson => Ok(()),
+            HotspotPasswordStorage::NetworkManager => Ok(()),
+            HotspotPasswordStorage::Keyring => {
+                if password.is_empty() {
+                    secrets::delete_hotspot_password()
+                } else {
+                    secrets::store_hotspot_password(password)
+                }
+            }
+        }
+    }
+
+    fn config_for_storage(config: &HotspotConfig, storage: &HotspotPasswordStorage) -> HotspotConfig {
+        if *storage == HotspotPasswordStorage::PlainJson {
+            config.clone()
+        } else {
+            let mut scrubbed = config.clone();
+            scrubbed.password.clear();
+            scrubbed
+        }
     }
 }
 

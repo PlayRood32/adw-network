@@ -7,6 +7,7 @@
 use anyhow::{Result, anyhow};
 use tokio::process::Command;
 use crate::config::HotspotConfig;
+use crate::nm;
 use log::{debug, warn, info, error};
 use std::collections::HashSet;
 
@@ -107,7 +108,7 @@ pub async fn create_hotspot_on(config: &HotspotConfig, iface: &str) -> Result<()
     
     // If not active, try to activate it
     info!("Hotspot not active, attempting to activate");
-    activate_hotspot_fast().await
+    activate_hotspot_fast(iface).await
 }
 
 async fn disconnect_wifi_on_interface(iface: &str) -> Result<()> {
@@ -162,28 +163,73 @@ async fn check_device_exists(iface: &str) -> Result<()> {
     debug!("Checking if device {} exists", iface);
     
     let output = Command::new("nmcli")
-        .args(["-t", "-f", "DEVICE,TYPE", "device", "status"])
+        .args(["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])
         .output()
         .await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     
     for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(2, ':').collect();
+        let parts: Vec<&str> = line.splitn(3, ':').collect();
         if parts.len() >= 2 && parts[0] == iface {
             let device_type = parts[1].trim();
+            let state = parts.get(2).map(|s| s.trim()).unwrap_or("unknown");
             debug!("Device {} found with type: {}", iface, device_type);
             
             // Check if it's a WiFi device
             if device_type != "wifi" {
                 return Err(anyhow!("Device {} is not a WiFi device (type: {})", iface, device_type));
             }
-            
+
+            ensure_device_available(iface, state).await?;
             return Ok(());
         }
     }
     
     Err(anyhow!("WiFi device {} not found", iface))
+}
+
+async fn ensure_device_available(iface: &str, state: &str) -> Result<()> {
+    if state != "unavailable" && state != "unmanaged" {
+        return Ok(());
+    }
+
+    warn!("Device {} is {}, attempting to enable it", iface, state);
+
+    let _ = Command::new("nmcli")
+        .args(["radio", "wifi", "on"])
+        .output()
+        .await;
+
+    let _ = Command::new("nmcli")
+        .args(["device", "set", iface, "managed", "yes"])
+        .output()
+        .await;
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    let output = Command::new("nmcli")
+        .args(["-t", "-f", "DEVICE,STATE", "device", "status"])
+        .output()
+        .await?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.splitn(2, ':').collect();
+        if parts.len() == 2 && parts[0] == iface {
+            let new_state = parts[1].trim();
+            if new_state == "unavailable" || new_state == "unmanaged" {
+                return Err(anyhow!(
+                    "WiFi device {} is still {}. It may be blocked (rfkill) or disabled.",
+                    iface,
+                    new_state
+                ));
+            }
+            return Ok(());
+        }
+    }
+
+    Ok(())
 }
 
 async fn add_hotspot(config: &HotspotConfig, iface: &str) -> Result<()> {
@@ -227,6 +273,12 @@ async fn add_hotspot(config: &HotspotConfig, iface: &str) -> Result<()> {
             .output()
             .await;
 
+        // Ensure the connection is bound to the selected interface.
+        let _ = Command::new("nmcli")
+            .args(["connection", "modify", "Hotspot", "connection.interface-name", iface])
+            .output()
+            .await;
+
         if config.hidden {
             let _ = Command::new("nmcli")
                 .args(["connection", "modify", "Hotspot", "wifi.hidden", "yes"])
@@ -248,6 +300,7 @@ async fn add_hotspot(config: &HotspotConfig, iface: &str) -> Result<()> {
         "connection".into(), "add".into(),
         "type".into(), "wifi".into(),
         "ifname".into(), iface.into(),
+        "connection.interface-name".into(), iface.into(),
         "con-name".into(), "Hotspot".into(),
         "autoconnect".into(), "no".into(),
         "ssid".into(), config.ssid.clone(),
@@ -293,11 +346,11 @@ async fn add_hotspot(config: &HotspotConfig, iface: &str) -> Result<()> {
     Ok(())
 }
 
-async fn activate_hotspot_fast() -> Result<()> {
+async fn activate_hotspot_fast(iface: &str) -> Result<()> {
     info!("Activating hotspot");
     
     let result = Command::new("nmcli")
-        .args(["connection", "up", "Hotspot"])
+        .args(["connection", "up", "Hotspot", "ifname", iface])
         .output()
         .await?;
 
@@ -315,7 +368,7 @@ async fn activate_hotspot_fast() -> Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     let result = Command::new("nmcli")
-        .args(["connection", "up", "Hotspot"])
+        .args(["connection", "up", "Hotspot", "ifname", iface])
         .output()
         .await?;
 
@@ -383,8 +436,12 @@ pub async fn is_hotspot_active() -> Result<bool> {
 }
 
 pub async fn get_wifi_devices() -> Result<Vec<String>> {
+    if !nm::is_wifi_present().await? {
+        return Err(anyhow!("No Wi-Fi hardware found."));
+    }
+
     let output = Command::new("nmcli")
-        .args(["-t", "-f", "DEVICE,TYPE", "device", "status"])
+        .args(["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])
         .output()
         .await?;
 
@@ -392,9 +449,12 @@ pub async fn get_wifi_devices() -> Result<Vec<String>> {
     let mut devices = Vec::new();
 
     for line in stdout.lines() {
-        let parts: Vec<&str> = line.splitn(2, ':').collect();
-        if parts.len() == 2 && parts[1] == "wifi" {
-            devices.push(parts[0].to_string());
+        let parts: Vec<&str> = line.splitn(3, ':').collect();
+        if parts.len() == 3 && parts[1] == "wifi" {
+            let state = parts[2].to_lowercase();
+            if state != "unmanaged" {
+                devices.push(parts[0].to_string());
+            }
         }
     }
 

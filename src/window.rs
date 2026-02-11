@@ -9,13 +9,15 @@ use gtk4::prelude::*;
 use gtk4::glib;
 use libadwaita::{self as adw, prelude::*};
 use std::cell::RefCell;
+use std::fs;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::config;
 use crate::hotspot;
 use crate::nm;
-use crate::ui::{icon_name, wifi_page::WifiPage, hotspot_page::HotspotPage, devices_page::DevicesPage};
+use crate::ui::{icon_name, wifi_page::WifiPage, ethernet_page::EthernetPage, hotspot_page::HotspotPage, devices_page::DevicesPage};
 
 pub struct AppPrefs {
     pub auto_scan: bool,
@@ -47,6 +49,7 @@ impl AdwNetworkWindow {
         }));
 
         let wifi_page = WifiPage::new(prefs.clone());
+        let ethernet_page = EthernetPage::new();
         let hotspot_page = HotspotPage::new(prefs.clone());
         let devices_page = DevicesPage::new();
 
@@ -67,6 +70,12 @@ impl AdwNetworkWindow {
             &["network-wireless-signal-excellent-symbolic", "network-wireless"][..],
         )));
 
+        let ethernet_stack_page = view_stack.add_titled(&ethernet_page.widget, Some("ethernet"), "Ethernet");
+        ethernet_stack_page.set_icon_name(Some(icon_name(
+            "network-wired-symbolic",
+            &["network-wired", "network-transmit-receive-symbolic"][..],
+        )));
+
         let hotspot_stack_page = view_stack.add_titled(&hotspot_page.widget, Some("hotspot"), "Hotspot");
         hotspot_stack_page.set_icon_name(Some(icon_name(
             "network-wireless-hotspot-symbolic",
@@ -78,6 +87,72 @@ impl AdwNetworkWindow {
             "computer-symbolic",
             &["network-workgroup-symbolic", "computer"][..],
         )));
+
+        // Hide pages for unsupported hardware (refresh periodically)
+        let wifi_page_ref = wifi_stack_page.clone();
+        let hotspot_page_ref = hotspot_stack_page.clone();
+        let ethernet_page_ref = ethernet_stack_page.clone();
+        let devices_page_ref = devices_stack_page.clone();
+        let view_stack_ref = view_stack.clone();
+        let update_visibility = move || {
+            let wifi_page_ref = wifi_page_ref.clone();
+            let hotspot_page_ref = hotspot_page_ref.clone();
+            let ethernet_page_ref = ethernet_page_ref.clone();
+            let devices_page_ref = devices_page_ref.clone();
+            let view_stack_ref = view_stack_ref.clone();
+
+            glib::spawn_future_local(async move {
+                match nm::has_wifi_device().await {
+                    Ok(true) => {
+                        wifi_page_ref.set_visible(true);
+                        hotspot_page_ref.set_visible(true);
+                        devices_page_ref.set_visible(true);
+                    }
+                    Ok(false) => {
+                        wifi_page_ref.set_visible(false);
+                        hotspot_page_ref.set_visible(false);
+                        devices_page_ref.set_visible(false);
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to detect Wi-Fi device: {}", e);
+                    }
+                }
+
+                match nm::has_ethernet_device().await {
+                    Ok(true) => ethernet_page_ref.set_visible(true),
+                    Ok(false) => ethernet_page_ref.set_visible(false),
+                    Err(e) => log::warn!("Failed to detect ethernet device: {}", e),
+                }
+
+                // Ensure the currently selected page is visible
+                let current_visible = view_stack_ref
+                    .visible_child()
+                    .map(|w| view_stack_ref.page(&w).is_visible())
+                    .unwrap_or(false);
+
+                if !current_visible {
+                    if ethernet_page_ref.is_visible() {
+                        let child = ethernet_page_ref.child();
+                        view_stack_ref.set_visible_child(&child);
+                    } else if wifi_page_ref.is_visible() {
+                        let child = wifi_page_ref.child();
+                        view_stack_ref.set_visible_child(&child);
+                    } else if hotspot_page_ref.is_visible() {
+                        let child = hotspot_page_ref.child();
+                        view_stack_ref.set_visible_child(&child);
+                    } else if devices_page_ref.is_visible() {
+                        let child = devices_page_ref.child();
+                        view_stack_ref.set_visible_child(&child);
+                    }
+                }
+            });
+        };
+
+        update_visibility();
+        glib::timeout_add_seconds_local(3, move || {
+            update_visibility();
+            glib::ControlFlow::Continue
+        });
 
         let view_switcher = adw::ViewSwitcher::builder()
             .stack(&view_stack)
@@ -100,11 +175,26 @@ impl AdwNetworkWindow {
         status_pill.append(&status_label);
         status_pill.set_tooltip_text(Some("Connection status"));
 
+        let speed_down_label = gtk4::Label::new(Some("↓ 0 KB/s"));
+        speed_down_label.add_css_class("status-speed-text");
+        let speed_up_label = gtk4::Label::new(Some("↑ 0 KB/s"));
+        speed_up_label.add_css_class("status-speed-text");
+        let speed_sep_label = gtk4::Label::new(Some("|"));
+        speed_sep_label.add_css_class("status-speed-sep");
+
+        let speed_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        speed_box.add_css_class("status-speed-box");
+        speed_box.append(&speed_down_label);
+        speed_box.append(&speed_sep_label);
+        speed_box.append(&speed_up_label);
+        speed_box.set_halign(gtk4::Align::Center);
+
         let title_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         title_box.add_css_class("header-title");
         status_pill.set_halign(gtk4::Align::Center);
         view_switcher.set_halign(gtk4::Align::Center);
         title_box.append(&status_pill);
+        title_box.append(&speed_box);
         title_box.append(&view_switcher);
 
         let menu_button = gtk4::MenuButton::builder()
@@ -224,6 +314,77 @@ impl AdwNetworkWindow {
         update_status();
         glib::timeout_add_seconds_local(5, update_status);
 
+        let speed_state = Arc::new(Mutex::new((0u64, 0u64)));
+        let speed_state_ui = Arc::clone(&speed_state);
+        let speed_down_label = speed_down_label.clone();
+        let speed_up_label = speed_up_label.clone();
+        glib::timeout_add_seconds_local(1, move || {
+            let (down_bytes, up_bytes) = speed_state_ui
+                .lock()
+                .map(|v| *v)
+                .unwrap_or((0, 0));
+            speed_down_label.set_text(&format!("↓ {}", format_speed(down_bytes)));
+            speed_up_label.set_text(&format!("↑ {}", format_speed(up_bytes)));
+            glib::ControlFlow::Continue
+        });
+
+        let speed_state_task = Arc::clone(&speed_state);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut last_iface: Option<String> = None;
+            let mut last_rx: Option<u64> = None;
+            let mut last_tx: Option<u64> = None;
+
+            loop {
+                interval.tick().await;
+
+                let iface = match nm::get_primary_connected_device().await {
+                    Ok(Some(dev)) => dev,
+                    _ => {
+                        last_iface = None;
+                        last_rx = None;
+                        last_tx = None;
+                        if let Ok(mut state) = speed_state_task.lock() {
+                            *state = (0, 0);
+                        }
+                        continue;
+                    }
+                };
+
+                if last_iface.as_deref() != Some(&iface) {
+                    last_iface = Some(iface.clone());
+                    last_rx = None;
+                    last_tx = None;
+                }
+
+                let Some((rx, tx)) = read_interface_bytes(&iface) else {
+                    last_rx = None;
+                    last_tx = None;
+                    if let Ok(mut state) = speed_state_task.lock() {
+                        *state = (0, 0);
+                    }
+                    continue;
+                };
+
+                let down = if let Some(prev_rx) = last_rx {
+                    rx.saturating_sub(prev_rx)
+                } else {
+                    0
+                };
+                let up = if let Some(prev_tx) = last_tx {
+                    tx.saturating_sub(prev_tx)
+                } else {
+                    0
+                };
+
+                last_rx = Some(rx);
+                last_tx = Some(tx);
+                if let Ok(mut state) = speed_state_task.lock() {
+                    *state = (down, up);
+                }
+            }
+        });
+
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Adwaita Network")
@@ -260,7 +421,7 @@ impl AdwNetworkWindow {
             .application_name("Adwaita Network")
             .application_icon("icon")
             .developer_name("PlayRood")
-            .version("0.1.3")
+            .version("0.1.4")
             .comments("A modern network management application built with libadwaita")
             .website("https://github.com/PlayRood/adw-network")
             .license_type(gtk4::License::Gpl30)
@@ -281,6 +442,14 @@ impl AdwNetworkWindow {
             .subtitle("Choose light or dark theme")
             .model(&theme_model)
             .build();
+        let appearance_title = Self::title_with_info(
+            "Appearance",
+            "Choose light or dark theme",
+            "Select whether the app follows the system theme or forces light/dark.",
+        );
+        theme_combo.set_title("");
+        theme_combo.set_subtitle("");
+        theme_combo.add_prefix(&appearance_title);
 
         let selected = match style_manager.color_scheme() {
             adw::ColorScheme::ForceLight => 1,
@@ -289,11 +458,11 @@ impl AdwNetworkWindow {
         };
         theme_combo.set_selected(selected);
 
-        let style_manager = style_manager.clone();
+        let style_manager_for_theme = style_manager.clone();
         let settings_state_for_theme = settings_state.clone();
         theme_combo.connect_selected_notify(move |row: &adw::ComboRow| {
             let scheme = Self::color_scheme_from_selection(row.selected());
-            style_manager.set_color_scheme(scheme);
+            style_manager_for_theme.set_color_scheme(scheme);
 
             let mut settings = settings_state_for_theme.borrow_mut();
             settings.color_scheme = Self::setting_from_selection(row.selected()).to_string();
@@ -306,12 +475,141 @@ impl AdwNetworkWindow {
         group.set_title("General");
         group.add(&theme_combo);
 
+        let storage_group = adw::PreferencesGroup::new();
+        storage_group.set_title("Security");
+
+        let storage_row = adw::ActionRow::builder()
+            .title("")
+            .subtitle("")
+            .build();
+        let storage_title = Self::title_with_info(
+            "Hotspot password storage",
+            "Choose how hotspot passwords are stored",
+            "Pick where the hotspot password is stored and who manages it.",
+        );
+        storage_row.add_prefix(&storage_title);
+
+        let storage_model = gtk4::StringList::new(&[
+            "System Keyring (Recommended)",
+            "NetworkManager keyring",
+            "Plain JSON (Legacy)",
+        ][..]);
+        let storage_tooltips = Rc::new(vec![
+            "Stores the hotspot password in the OS keyring (recommended).",
+            "Lets NetworkManager store the password in its keyring after activation.",
+            "Stores the password in the config JSON file (least secure).",
+        ]);
+
+        let storage_dropdown =
+            gtk4::DropDown::new(Some(storage_model.clone()), None::<gtk4::Expression>);
+        storage_dropdown.set_selected(Self::selection_from_password_storage(
+            &settings_state.borrow().hotspot_password_storage,
+        ));
+
+        let display_factory = gtk4::SignalListItemFactory::new();
+        display_factory.connect_setup(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk4::ListItem>()
+                .unwrap();
+            let label = gtk4::Label::new(None);
+            label.set_xalign(0.0);
+            list_item.set_child(Some(&label));
+        });
+        display_factory.connect_bind(|_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk4::ListItem>()
+                .unwrap();
+            let item = list_item
+                .item()
+                .and_downcast::<gtk4::StringObject>()
+                .unwrap();
+            let label = list_item
+                .child()
+                .and_downcast::<gtk4::Label>()
+                .unwrap();
+            label.set_text(&item.string());
+        });
+
+        let list_factory = gtk4::SignalListItemFactory::new();
+        let tooltips_for_list = storage_tooltips.clone();
+        list_factory.connect_setup(move |_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk4::ListItem>()
+                .unwrap();
+            let box_ = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+            let label = gtk4::Label::new(None);
+            label.set_xalign(0.0);
+            let info = gtk4::Button::builder()
+                .icon_name("help-about-symbolic")
+                .css_classes(vec![
+                    "flat".to_string(),
+                    "circular".to_string(),
+                    "info-inline".to_string(),
+                ])
+                .build();
+            info.set_focus_on_click(false);
+            info.set_can_focus(false);
+            box_.append(&label);
+            box_.append(&info);
+            list_item.set_child(Some(&box_));
+        });
+        list_factory.connect_bind(move |_, list_item| {
+            let list_item = list_item
+                .downcast_ref::<gtk4::ListItem>()
+                .unwrap();
+            let item = list_item
+                .item()
+                .and_downcast::<gtk4::StringObject>()
+                .unwrap();
+            let box_ = list_item
+                .child()
+                .and_downcast::<gtk4::Box>()
+                .unwrap();
+            let label = box_
+                .first_child()
+                .and_downcast::<gtk4::Label>()
+                .unwrap();
+            label.set_text(&item.string());
+            let info = box_
+                .last_child()
+                .and_downcast::<gtk4::Button>()
+                .unwrap();
+            let idx = list_item.position() as usize;
+            if let Some(tip) = tooltips_for_list.get(idx) {
+                info.set_tooltip_text(Some(tip));
+            }
+        });
+
+        storage_dropdown.set_factory(Some(&display_factory));
+        storage_dropdown.set_list_factory(Some(&list_factory));
+
+        let settings_state_for_storage = settings_state.clone();
+        storage_dropdown.connect_selected_notify(move |dropdown| {
+            let mut settings = settings_state_for_storage.borrow_mut();
+            settings.hotspot_password_storage =
+                Self::password_storage_from_selection(dropdown.selected());
+            if let Err(e) = config::save_app_settings(&config::app_settings_path(), &*settings) {
+                log::warn!("Failed to save app settings: {}", e);
+            }
+        });
+
+        storage_row.add_suffix(&storage_dropdown);
+        storage_group.add(&storage_row);
+
         let settings_state_for_switches = settings_state.clone();
         let auto_scan_row = adw::SwitchRow::builder()
             .title("Auto refresh networks")
             .subtitle("Scan for networks automatically every 10 seconds")
             .active(settings_state_for_switches.borrow().auto_scan)
             .build();
+        let auto_scan_title = Self::title_with_info(
+            "Auto refresh networks",
+            "Scan for networks automatically every 10 seconds",
+            "Automatically rescans for nearby networks every 10 seconds.",
+        );
+        auto_scan_row.set_title("");
+        auto_scan_row.set_subtitle("");
+        auto_scan_row.add_prefix(&auto_scan_title);
 
         let settings_state_for_switches = settings_state.clone();
         let expand_details_row = adw::SwitchRow::builder()
@@ -319,6 +617,14 @@ impl AdwNetworkWindow {
             .subtitle("Expand details on the connected network card")
             .active(settings_state_for_switches.borrow().expand_connected_details)
             .build();
+        let expand_details_title = Self::title_with_info(
+            "Always show connection details",
+            "Expand details on the connected network card",
+            "Keeps the connected network card expanded to show details.",
+        );
+        expand_details_row.set_title("");
+        expand_details_row.set_subtitle("");
+        expand_details_row.add_prefix(&expand_details_title);
 
         let prefs_for_auto_scan = prefs.clone();
         let settings_state_for_auto_scan = settings_state.clone();
@@ -351,10 +657,66 @@ impl AdwNetworkWindow {
         personalization_group.add(&auto_scan_row);
         personalization_group.add(&expand_details_row);
 
+        let reset_button = gtk4::Button::builder()
+            .label("Reset to defaults")
+            .css_classes(vec!["destructive-action".to_string()])
+            .build();
+
+        let reset_row = adw::ActionRow::builder()
+            .title("Reset settings")
+            .subtitle("Clear all changes and restore defaults")
+            .build();
+        let reset_title = Self::title_with_info(
+            "Reset settings",
+            "Clear all changes and restore defaults",
+            "Resets all settings to their default values.",
+        );
+        reset_row.set_title("");
+        reset_row.set_subtitle("");
+        reset_row.add_prefix(&reset_title);
+        reset_row.add_suffix(&reset_button);
+        reset_row.set_activatable_widget(Some(&reset_button));
+
+        let reset_group = adw::PreferencesGroup::new();
+        reset_group.set_title("Reset");
+        reset_group.add(&reset_row);
+
+        let settings_state_for_reset = settings_state.clone();
+        let prefs_for_reset = prefs.clone();
+        let wifi_for_reset = wifi_page.clone_ref();
+        let theme_combo_for_reset = theme_combo.clone();
+        let storage_dropdown_for_reset = storage_dropdown.clone();
+        let auto_scan_for_reset = auto_scan_row.clone();
+        let expand_details_for_reset = expand_details_row.clone();
+        let style_manager_for_reset = style_manager.clone();
+        reset_button.connect_clicked(move |_| {
+            let defaults = config::AppSettings::default();
+            if let Err(e) = config::save_app_settings(&config::app_settings_path(), &defaults) {
+                log::warn!("Failed to save app settings: {}", e);
+            }
+
+            *settings_state_for_reset.borrow_mut() = defaults.clone();
+
+            prefs_for_reset.borrow_mut().auto_scan = defaults.auto_scan;
+            prefs_for_reset.borrow_mut().expand_connected_details = defaults.expand_connected_details;
+
+            theme_combo_for_reset.set_selected(0);
+            style_manager_for_reset.set_color_scheme(adw::ColorScheme::Default);
+            storage_dropdown_for_reset.set_selected(
+                Self::selection_from_password_storage(&defaults.hotspot_password_storage),
+            );
+
+            auto_scan_for_reset.set_active(defaults.auto_scan);
+            expand_details_for_reset.set_active(defaults.expand_connected_details);
+            wifi_for_reset.apply_expand_details_setting(defaults.expand_connected_details);
+        });
+
         let page = adw::PreferencesPage::new();
         page.set_title("Settings");
         page.add(&group);
+        page.add(&storage_group);
         page.add(&personalization_group);
+        page.add(&reset_group);
 
         let settings = adw::PreferencesDialog::builder()
             .title("Settings")
@@ -391,9 +753,61 @@ impl AdwNetworkWindow {
         }
     }
 
+    fn title_with_info(title: &str, subtitle: &str, tooltip: &str) -> gtk4::Box {
+        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        vbox.set_hexpand(true);
+
+        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+        let label = gtk4::Label::new(Some(title));
+        label.set_xalign(0.0);
+        label.add_css_class("row-title");
+
+        let info = gtk4::Button::builder()
+            .icon_name("help-about-symbolic")
+            .tooltip_text(tooltip)
+            .css_classes(vec![
+                "flat".to_string(),
+                "circular".to_string(),
+                "info-inline".to_string(),
+            ])
+            .build();
+        info.set_focus_on_click(false);
+        info.set_can_focus(false);
+
+        hbox.append(&label);
+        hbox.append(&info);
+
+        let subtitle_label = gtk4::Label::new(Some(subtitle));
+        subtitle_label.set_xalign(0.0);
+        subtitle_label.set_wrap(true);
+        subtitle_label.set_opacity(0.7);
+        subtitle_label.add_css_class("row-subtitle");
+
+        vbox.append(&hbox);
+        vbox.append(&subtitle_label);
+        vbox
+    }
+
+    fn password_storage_from_selection(selected: u32) -> config::HotspotPasswordStorage {
+        match selected {
+            1 => config::HotspotPasswordStorage::NetworkManager,
+            2 => config::HotspotPasswordStorage::PlainJson,
+            _ => config::HotspotPasswordStorage::Keyring,
+        }
+    }
+
+    fn selection_from_password_storage(storage: &config::HotspotPasswordStorage) -> u32 {
+        match storage {
+            config::HotspotPasswordStorage::Keyring => 0,
+            config::HotspotPasswordStorage::NetworkManager => 1,
+            config::HotspotPasswordStorage::PlainJson => 2,
+        }
+    }
+
+
     fn load_css() {
         let provider = gtk4::CssProvider::new();
-        
+
         let css = r#"
 /* Modern network management design - Inspired by airctl and GNOME */
 
@@ -423,6 +837,23 @@ button.flat.circular {
     min-width: 32px;
     min-height: 32px;
     padding: 0;
+}
+
+button.info-inline {
+    min-width: 20px;
+    min-height: 20px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+button.info-inline:hover,
+button.info-inline:active,
+button.info-inline:focus {
+    background: transparent;
+    box-shadow: none;
 }
 
 button.touch-target {
@@ -858,6 +1289,18 @@ statuspage.devices-empty image {
     font-size: 0.85em;
 }
 
+.status-speed-box {
+    opacity: 0.8;
+}
+
+.status-speed-text {
+    font-size: 0.8em;
+}
+
+.status-speed-sep {
+    opacity: 0.6;
+}
+
 .status-pill.status-online {
     background: alpha(@success_color, 0.12);
     color: @success_color;
@@ -926,9 +1369,35 @@ statuspage.devices-empty image {
             &provider,
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+
     }
 
     pub fn present(&self) {
         self.window.present();
+    }
+}
+
+fn read_interface_bytes(iface: &str) -> Option<(u64, u64)> {
+    let rx_path = format!("/sys/class/net/{}/statistics/rx_bytes", iface);
+    let tx_path = format!("/sys/class/net/{}/statistics/tx_bytes", iface);
+    let rx = fs::read_to_string(rx_path).ok()?.trim().parse::<u64>().ok()?;
+    let tx = fs::read_to_string(tx_path).ok()?.trim().parse::<u64>().ok()?;
+    Some((rx, tx))
+}
+
+fn format_speed(bytes_per_sec: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let value = bytes_per_sec as f64;
+    if value >= GIB {
+        format!("{:.1} GiB/s", value / GIB)
+    } else if value >= MIB {
+        format!("{:.1} MiB/s", value / MIB)
+    } else if value >= KIB {
+        format!("{:.0} KiB/s", value / KIB)
+    } else {
+        format!("{} B/s", bytes_per_sec)
     }
 }

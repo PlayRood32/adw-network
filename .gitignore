@@ -2,6 +2,8 @@
 # Location: /.gitignore
 
 /target/
+/adw-network
+/adw-network-bin/
 Cargo.lock
 *.log
 *.pkg.tar.zst

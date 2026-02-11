@@ -2,6 +2,7 @@
 // Location: /src/ui/mod.rs
 
 pub mod wifi_page;
+pub mod ethernet_page;
 pub mod hotspot_page;
 pub mod devices_page;
 

@@ -9,6 +9,7 @@ use gtk4::prelude::*;
 use gtk4::glib;
 use libadwaita::{self as adw, prelude::*};
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -1614,6 +1615,115 @@ impl WifiPage {
             info_box.append(&auto_group);
         }
 
+        // Custom DNS (active connection only)
+        let dns_group = adw::PreferencesGroup::builder()
+            .title("Custom DNS")
+            .build();
+
+        let dns_entry = adw::EntryRow::builder()
+            .title("DNS servers")
+            .build();
+
+        if let Some(i) = info.as_ref() {
+            if !i.dns.is_empty() {
+                dns_entry.set_text(&i.dns.join(", "));
+            }
+        }
+
+        let search_entry = adw::EntryRow::builder()
+            .title("Search domains")
+            .build();
+
+        let apply_button = gtk4::Button::builder()
+            .label("Apply")
+            .css_classes(vec!["suggested-action".to_string()])
+            .build();
+        apply_button.set_sensitive(network.connected);
+
+        let apply_row = adw::ActionRow::builder()
+            .title("Apply to active connection")
+            .subtitle(if network.connected {
+                "Reapply the connection to use custom DNS"
+            } else {
+                "Connect to this network to apply changes"
+            })
+            .build();
+        apply_row.add_suffix(&apply_button);
+        apply_row.set_activatable_widget(Some(&apply_button));
+
+        let page_apply = self.clone_ref();
+        let ssid_apply = network.ssid.clone();
+        let connected_apply = network.connected;
+        let dns_entry_apply = dns_entry.clone();
+        let search_entry_apply = search_entry.clone();
+        apply_button.connect_clicked(move |_| {
+            if !connected_apply {
+                page_apply.show_toast("Connect to this network to apply DNS");
+                return;
+            }
+
+            let dns_text = dns_entry_apply.text().to_string();
+            let search_text = search_entry_apply.text().to_string();
+            let dns_servers = parse_entry_list(&dns_text);
+            if dns_servers.is_empty() {
+                page_apply.show_toast("Enter at least one DNS server");
+                return;
+            }
+
+            let invalid = invalid_ip_entries(&dns_servers);
+            if !invalid.is_empty() {
+                page_apply.show_toast(&format!(
+                    "Invalid DNS IP: {}",
+                    invalid.join(", ")
+                ));
+                return;
+            }
+
+            let search_domains = parse_entry_list(&search_text);
+            let page = page_apply.clone_ref();
+            let ssid = ssid_apply.clone();
+
+            glib::spawn_future_local(async move {
+                match nm::get_active_connection_name().await {
+                    Ok(Some(active)) => {
+                        if active != ssid {
+                            page.show_toast("Active connection does not match this network");
+                            return;
+                        }
+                        if let Err(e) = nm::set_custom_ipv4_dns_for_connection(
+                            &active,
+                            &dns_servers,
+                            &search_domains,
+                        )
+                        .await
+                        {
+                            page.show_toast(&format!("Failed to set DNS: {}", e));
+                            return;
+                        }
+                        if let Err(e) = nm::reapply_connection(&active).await {
+                            page.show_toast(&format!("Failed to apply connection: {}", e));
+                            return;
+                        }
+                        page.show_toast("Custom DNS applied");
+                    }
+                    Ok(None) => {
+                        page.show_toast("No active connection found");
+                    }
+                    Err(e) => {
+                        page.show_toast(&format!(
+                            "Failed to get active connection: {}",
+                            e
+                        ));
+                    }
+                }
+            });
+        });
+
+        dns_group.add(&dns_entry);
+        dns_group.add(&search_entry);
+        dns_group.add(&apply_row);
+        info_box.append(&dns_group);
+
         // Info items section
         let info_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
@@ -1825,4 +1935,26 @@ fn get_signal_strength_text(signal: u8) -> String {
         "Weak"
     };
     format!("{} ({}%)", quality, signal)
+}
+
+fn parse_entry_list(input: &str) -> Vec<String> {
+    input
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter_map(|item| {
+            let trimmed = item.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect()
+}
+
+fn invalid_ip_entries(entries: &[String]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.parse::<IpAddr>().is_err())
+        .cloned()
+        .collect()
 }

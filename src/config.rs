@@ -21,6 +21,8 @@ pub struct AppSettings {
     pub auto_scan: bool,
     #[serde(default = "default_expand_connected_details")]
     pub expand_connected_details: bool,
+    #[serde(default = "default_hotspot_password_storage")]
+    pub hotspot_password_storage: HotspotPasswordStorage,
 }
 
 impl Default for AppSettings {
@@ -29,6 +31,7 @@ impl Default for AppSettings {
             color_scheme: "system".to_string(),
             auto_scan: true,
             expand_connected_details: false,
+            hotspot_password_storage: HotspotPasswordStorage::Keyring,
         }
     }
 }
@@ -49,6 +52,20 @@ fn default_auto_scan() -> bool {
 fn default_expand_connected_details() -> bool {
     false
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HotspotPasswordStorage {
+    Keyring,
+    NetworkManager,
+    PlainJson,
+}
+
+fn default_hotspot_password_storage() -> HotspotPasswordStorage {
+    HotspotPasswordStorage::Keyring
+}
+
+// No external theme settings.
 
 impl Default for HotspotConfig {
     fn default() -> Self {

@@ -17,6 +17,182 @@ pub struct WifiNetwork {
     pub security_type: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceType {
+    Ethernet,
+    Wifi,
+    Loopback,
+    Other(String),
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct Device {
+    pub name: String,
+    pub device_type: DeviceType,
+    pub state: String,
+    pub connection: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct Connection {
+    pub name: String,
+    pub uuid: String,
+    pub conn_type: String,
+    pub device: Option<String>,
+    pub active: bool,
+}
+
+pub struct NetworkManager;
+
+impl NetworkManager {
+    pub async fn get_devices() -> Result<Vec<Device>> {
+        let output = Command::new("nmcli")
+            .args(["-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "dev", "status"])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Failed to get devices: {}", stderr.trim()));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut devices = Vec::new();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.rsplitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+
+            let connection = parts[0];
+            let state = parts[1];
+            let dev_type = parts[2];
+            let name = parts[3];
+
+            let device_type = match dev_type {
+                "ethernet" => DeviceType::Ethernet,
+                "wifi" => DeviceType::Wifi,
+                "loopback" => DeviceType::Loopback,
+                other => DeviceType::Other(other.to_string()),
+            };
+
+            let connection = if connection.is_empty() || connection == "--" {
+                None
+            } else {
+                Some(connection.to_string())
+            };
+
+            devices.push(Device {
+                name: name.to_string(),
+                device_type,
+                state: state.to_string(),
+                connection,
+            });
+        }
+
+        Ok(devices)
+    }
+
+    pub async fn get_connections() -> Result<Vec<Connection>> {
+        let output = Command::new("nmcli")
+            .args(["-t", "-f", "NAME,UUID,TYPE,DEVICE,ACTIVE", "connection", "show"])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("Failed to get connections: {}", stderr.trim()));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut connections = Vec::new();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let parts: Vec<&str> = line.rsplitn(5, ':').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+
+            let active = parts[0];
+            let device = parts[1];
+            let conn_type = parts[2];
+            let uuid = parts[3];
+            let name = parts[4];
+
+            let device = if device.is_empty() || device == "--" {
+                None
+            } else {
+                Some(device.to_string())
+            };
+
+            connections.push(Connection {
+                name: name.to_string(),
+                uuid: uuid.to_string(),
+                conn_type: conn_type.to_string(),
+                device,
+                active: active == "yes",
+            });
+        }
+
+        Ok(connections)
+    }
+}
+
+impl Connection {
+    pub fn is_ethernet(&self) -> bool {
+        self.conn_type == "802-3-ethernet" || self.conn_type == "ethernet"
+    }
+
+    pub async fn activate(&self) -> Result<ConnectStatus> {
+        let output = Command::new("nmcli")
+            .args(["connection", "up", &self.name])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let err = nmcli_error_text(&output);
+            return Err(anyhow!("Failed to activate connection: {}", err));
+        }
+
+        Ok(ConnectStatus::Connected)
+    }
+
+    pub async fn deactivate(&self) -> Result<()> {
+        let output = Command::new("nmcli")
+            .args(["connection", "down", &self.name])
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let err = nmcli_error_text(&output);
+            return Err(anyhow!("Failed to deactivate connection: {}", err));
+        }
+
+        Ok(())
+    }
+
+    pub async fn autoconnect(&self) -> Result<bool> {
+        get_autoconnect_for_connection(&self.name).await
+    }
+
+    pub async fn set_autoconnect(&self, enabled: bool) -> Result<()> {
+        set_autoconnect_for_connection(&self.name, enabled).await
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectStatus {
     Connected,
@@ -68,6 +244,107 @@ pub async fn set_wifi_enabled(enabled: bool) -> Result<()> {
         return Err(anyhow!("Failed to set WiFi state: {}", stderr));
     }
     Ok(())
+}
+
+pub async fn is_ethernet_enabled() -> Result<bool> {
+    let devices = NetworkManager::get_devices().await?;
+    let mut saw_ethernet = false;
+
+    for device in devices {
+        if device.device_type != DeviceType::Ethernet {
+            continue;
+        }
+        saw_ethernet = true;
+        let state = device.state.to_lowercase();
+        if state != "unavailable" && state != "unmanaged" {
+            return Ok(true);
+        }
+    }
+
+    Ok(saw_ethernet)
+}
+
+pub async fn set_ethernet_enabled(enabled: bool) -> Result<()> {
+    let devices = NetworkManager::get_devices().await?;
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for device in devices {
+        if device.device_type != DeviceType::Ethernet {
+            continue;
+        }
+
+        let args = if enabled {
+            vec!["device", "connect", device.name.as_str()]
+        } else {
+            vec!["device", "disconnect", device.name.as_str()]
+        };
+
+        let output = Command::new("nmcli").args(&args).output().await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            last_err = Some(anyhow!(
+                "Failed to {} {}: {}",
+                if enabled { "connect" } else { "disconnect" },
+                device.name,
+                stderr.trim()
+            ));
+        }
+    }
+
+    if let Some(err) = last_err {
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+pub async fn has_wifi_device() -> Result<bool> {
+    if !is_wifi_present().await? {
+        return Ok(false);
+    }
+    let devices = NetworkManager::get_devices().await?;
+    Ok(devices.iter().any(|d| {
+        if d.device_type != DeviceType::Wifi {
+            return false;
+        }
+        let state = d.state.to_lowercase();
+        state != "unmanaged"
+    }))
+}
+
+pub async fn is_wifi_present() -> Result<bool> {
+    let output = Command::new("nmcli")
+        .args(["-t", "-f", "WIFI-HW", "radio"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Failed to get Wi-Fi hardware state: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let hw_state = line.split(':').next().unwrap_or(line);
+        return Ok(!hw_state.eq_ignore_ascii_case("missing"));
+    }
+
+    Ok(false)
+}
+
+pub async fn has_ethernet_device() -> Result<bool> {
+    let devices = NetworkManager::get_devices().await?;
+    Ok(devices.iter().any(|d| {
+        if d.device_type != DeviceType::Ethernet {
+            return false;
+        }
+        let state = d.state.to_lowercase();
+        state != "unavailable" && state != "unmanaged"
+    }))
 }
 
 pub async fn scan_networks() -> Result<Vec<WifiNetwork>> {
@@ -365,6 +642,137 @@ pub async fn get_active_wired_connection() -> Result<Option<String>> {
     Ok(None)
 }
 
+pub async fn get_active_connection_name() -> Result<Option<String>> {
+    let output = Command::new("nmcli")
+        .args(["-t", "-f", "NAME,TYPE,STATE", "connection", "show", "--active"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "Failed to get active connection: {}",
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut fallback: Option<String> = None;
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.rsplitn(3, ':').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let state = parts[0];
+        let conn_type = parts[1];
+        let name = parts[2];
+
+        if state.is_empty() || name.is_empty() || name == "--" {
+            continue;
+        }
+
+        if fallback.is_none() {
+            fallback = Some(name.to_string());
+        }
+
+        if conn_type == "802-11-wireless" {
+            return Ok(Some(name.to_string()));
+        }
+    }
+
+    Ok(fallback)
+}
+
+pub async fn get_primary_connected_device() -> Result<Option<String>> {
+    let output = Command::new("nmcli")
+        .args(["-t", "-f", "DEVICE,TYPE,STATE", "dev", "status"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Failed to get active device: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut wired = None;
+    let mut wifi = None;
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let device = parts[0];
+        let dev_type = parts[1];
+        let state = parts[2];
+        if !state.starts_with("connected") {
+            continue;
+        }
+        match dev_type {
+            "ethernet" => {
+                if wired.is_none() {
+                    wired = Some(device.to_string());
+                }
+            }
+            "wifi" => {
+                if wifi.is_none() {
+                    wifi = Some(device.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(wired.or(wifi))
+}
+
+pub async fn set_custom_ipv4_dns_for_connection(
+    connection: &str,
+    dns_servers: &[String],
+    search_domains: &[String],
+) -> Result<()> {
+    let dns_value = dns_servers.join(" ");
+    let search_value = search_domains.join(" ");
+
+    let output = Command::new("nmcli")
+        .args([
+            "connection",
+            "modify",
+            connection,
+            "ipv4.dns",
+            dns_value.as_str(),
+            "ipv4.ignore-auto-dns",
+            "yes",
+            "ipv4.dns-search",
+            search_value.as_str(),
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let err = nmcli_error_text(&output);
+        return Err(anyhow!("Failed to set DNS: {}", err));
+    }
+
+    Ok(())
+}
+
+pub async fn reapply_connection(connection: &str) -> Result<()> {
+    let output = Command::new("nmcli")
+        .args(["connection", "up", connection])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let err = nmcli_error_text(&output);
+        return Err(anyhow!("Failed to apply connection: {}", err));
+    }
+
+    Ok(())
+}
+
 pub async fn is_network_saved(ssid: &str) -> Result<bool> {
     let output = Command::new("nmcli")
         .args(["-t", "-f", "NAME,TYPE", "connection", "show"])
@@ -403,10 +811,40 @@ pub async fn get_autoconnect_for_ssid(ssid: &str) -> Result<bool> {
     Ok(value == "yes" || value == "true")
 }
 
+pub async fn get_autoconnect_for_connection(name: &str) -> Result<bool> {
+    let output = Command::new("nmcli")
+        .args(["-t", "-g", "connection.autoconnect", "connection", "show", name])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Failed to get autoconnect: {}", stderr.trim()));
+    }
+
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    Ok(value == "yes" || value == "true")
+}
+
 pub async fn set_autoconnect_for_ssid(ssid: &str, enabled: bool) -> Result<()> {
     let value = if enabled { "yes" } else { "no" };
     let output = Command::new("nmcli")
         .args(["connection", "modify", ssid, "connection.autoconnect", value])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("Failed to set autoconnect: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+pub async fn set_autoconnect_for_connection(name: &str, enabled: bool) -> Result<()> {
+    let value = if enabled { "yes" } else { "no" };
+    let output = Command::new("nmcli")
+        .args(["connection", "modify", name, "connection.autoconnect", value])
         .output()
         .await?;
 

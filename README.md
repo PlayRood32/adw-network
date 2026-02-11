@@ -319,9 +319,9 @@ This project is licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE) for 
 
 - [ ] VPN integration
 - [ ] Mobile data support
-- [ ] Network speed monitoring
-- [ ] Custom DNS configuration
-- [ ] Ethernet connection management
+- [✔] Network speed monitoring
+- [✔] Custom DNS configuration
+- [✔] Ethernet connection management
 - [ ] Network profiles (home/work/public)
 - [ ] Bandwidth limiting for hotspot
 - [ ] MAC address filtering for hotspot
