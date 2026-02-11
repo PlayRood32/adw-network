@@ -30,6 +30,7 @@ Clean WiFi and hotspot management with an Adwaita-native UI.
 - Hotspot creation and configuration
 - QR code sharing for quick mobile connection
 - Real-time device list for active hotspot
+- Ethernet connection management
 - Adwaita UI with light/dark theme support
 - Auto refresh for networks and devices
 - WPA/WPA2/WPA3 and hidden SSID support
@@ -63,6 +64,12 @@ This release focuses on UI/UX polish and stability across WiFi, hotspot, and dev
 - Hostname resolution where available
 - Device-type icons (phone vs computer)
 - Auto-refresh only while hotspot is active
+
+### 🔌 Ethernet Page
+- Ethernet enable/disable toggle
+- Connected profile card with details
+- Refresh wired connections list
+- Context menu actions for connections
 
 ### 🧩 General
 - Polkit prompts documented and expected
@@ -175,6 +182,13 @@ yay -S adw-network
 - Device icons for phones and computers
 - Auto-refresh every 5 seconds while hotspot is active
 
+### 🔌 Ethernet Management
+
+1. Enable Ethernet: toggle the Ethernet switch in the Ethernet tab
+2. Refresh connections list
+3. View connected profile details
+4. Use the context menu for connection actions
+
 ---
 
 ## 🗂️ Project Structure
@@ -194,6 +208,7 @@ yay -S adw-network
 ├── 📁 src
 │   ├── 📁 ui
 │   │   ├── 🦀 devices_page.rs
+│   │   ├── 🦀 ethernet_page.rs
 │   │   ├── 🦀 hotspot_page.rs
 │   │   ├── 🦀 mod.rs
 │   │   └── 🦀 wifi_page.rs
@@ -204,6 +219,7 @@ yay -S adw-network
 │   ├── 🦀 nm.rs
 │   ├── 🦀 qr.rs
 │   ├── 🦀 qr_dialog.rs
+│   ├── 🦀 secrets.rs
 │   └── 🦀 window.rs
 ├── ⚙️ .gitignore
 ├── ⚙️ Cargo.toml
