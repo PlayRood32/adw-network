@@ -788,7 +788,7 @@ impl AdwNetworkWindow {
 
         Self::apply_view_switcher_tooltips(
             view_switcher,
-            &["Wi-Fi", "Ethernet", "Hotspot", "Devices", "Profiles"],
+            &["Wi-Fi", "Ethernet", "Hotspot", "Devices", "Profiles"][..],
         );
     }
 
