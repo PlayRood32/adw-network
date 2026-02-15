@@ -21,6 +21,8 @@ pub struct AppSettings {
     pub auto_scan: bool,
     #[serde(default = "default_expand_connected_details")]
     pub expand_connected_details: bool,
+    #[serde(default = "default_icons_only_navigation")]
+    pub icons_only_navigation: bool,
     #[serde(default = "default_hotspot_password_storage")]
     pub hotspot_password_storage: HotspotPasswordStorage,
 }
@@ -31,6 +33,7 @@ impl Default for AppSettings {
             color_scheme: "system".to_string(),
             auto_scan: true,
             expand_connected_details: false,
+            icons_only_navigation: true,
             hotspot_password_storage: HotspotPasswordStorage::Keyring,
         }
     }
@@ -51,6 +54,10 @@ fn default_auto_scan() -> bool {
 
 fn default_expand_connected_details() -> bool {
     false
+}
+
+fn default_icons_only_navigation() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

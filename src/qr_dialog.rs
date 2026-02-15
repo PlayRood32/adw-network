@@ -10,13 +10,23 @@ use crate::qr;
 pub async fn show_qr_dialog(
     ssid: &str,
     password: &str,
+    security_type: Option<&str>,
     _size: i32,
     toast_overlay: &adw::ToastOverlay,
 ) {
-    let wifi_string = if password.is_empty() {
-        format!("WIFI:T:nopass;S:{};P:;;", ssid)
+    let ssid_escaped = escape_wifi_field(ssid);
+    let password_escaped = escape_wifi_field(password);
+    let auth = if password.is_empty() {
+        "nopass"
+    } else if security_type.map(|s| s.contains("WEP")).unwrap_or(false) {
+        "WEP"
     } else {
-        format!("WIFI:T:WPA;S:{};P:{};;", ssid, password)
+        "WPA"
+    };
+    let wifi_string = if password.is_empty() {
+        format!("WIFI:T:{};S:{};;", auth, ssid_escaped)
+    } else {
+        format!("WIFI:T:{};S:{};P:{};;", auth, ssid_escaped, password_escaped)
     };
 
     let qr_result = qr::generate_bytes_for_pixbuf(&wifi_string[..]);
@@ -105,4 +115,18 @@ pub async fn show_qr_dialog(
             toast_overlay.add_toast(toast);
         }
     }
+}
+
+fn escape_wifi_field(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' | ';' | ',' | ':' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }

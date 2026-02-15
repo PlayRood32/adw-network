@@ -856,6 +856,57 @@ pub async fn set_autoconnect_for_connection(name: &str, enabled: bool) -> Result
     Ok(())
 }
 
+pub async fn set_autoconnect_for_connection_uuid(uuid: &str, enabled: bool) -> Result<()> {
+    let value = if enabled { "yes" } else { "no" };
+    let output = Command::new("nmcli")
+        .args([
+            "connection",
+            "modify",
+            "uuid",
+            uuid,
+            "connection.autoconnect",
+            value,
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "Failed to set autoconnect for uuid {}: {}",
+            uuid,
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
+pub async fn set_connection_zone_for_connection_uuid(uuid: &str, zone: &str) -> Result<()> {
+    let output = Command::new("nmcli")
+        .args([
+            "connection",
+            "modify",
+            "uuid",
+            uuid,
+            "connection.zone",
+            zone,
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "Failed to set zone for uuid {}: {}",
+            uuid,
+            stderr.trim()
+        ));
+    }
+
+    Ok(())
+}
+
 pub async fn connect_open_network(ssid: &str) -> Result<ConnectStatus> {
     match connect_open_network_once(ssid).await {
         Ok(status) => Ok(status),

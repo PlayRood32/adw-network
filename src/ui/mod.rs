@@ -5,6 +5,7 @@ pub mod wifi_page;
 pub mod ethernet_page;
 pub mod hotspot_page;
 pub mod devices_page;
+pub mod profiles_page;
 
 pub fn icon_name<'a>(primary: &'a str, fallbacks: &'a [&'a str]) -> &'a str {
     let Some(display) = gtk4::gdk::Display::default() else {

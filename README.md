@@ -31,6 +31,8 @@ Clean WiFi and hotspot management with an Adwaita-native UI.
 - QR code sharing for quick mobile connection
 - Real-time device list for active hotspot
 - Ethernet connection management
+- Network profiles (manual activation)
+- Minimal, responsive Settings dialog
 - Adwaita UI with light/dark theme support
 - Auto refresh for networks and devices
 - WPA/WPA2/WPA3 and hidden SSID support
@@ -71,10 +73,20 @@ This release focuses on UI/UX polish and stability across WiFi, hotspot, and dev
 - Refresh wired connections list
 - Context menu actions for connections
 
+### 🧭 Profiles Page
+- Create profile sets (Home/Work/Public)
+- Assign Wi-Fi and Ethernet connections by UUID
+- Rename and delete profiles
+- Manual activation from Profiles tab
+- Activating a profile updates `connection.autoconnect` for assigned/unassigned connections
+- Automatic switching is not enabled yet (manual switch only)
+
 ### 🧩 General
 - Polkit prompts documented and expected
-- Consistent AlertDialog usage across the app
-- Cleaner lists and responsive layout
+- Consistent dialogs for prompts and confirmations
+- Cleaner lists, improved responsive layout, and compact header controls
+- Top navigation supports icons-only mode with hover labels (Wi-Fi, Hotspot, etc.)
+- Settings dialog simplified for a minimal and clearer flow
 - Error handling and logging improvements
 - Respects system GTK theme
 
@@ -136,7 +148,7 @@ cargo build --release
 # Install (see BUILD & RUN INSTRUCTIONS section for complete steps)
 sudo install -Dm755 target/release/adwaita-network /usr/bin/adwaita-network
 
-sudo install -Dm644 data/com.github.adw-network.desktop /usr share/applications/com.github.adw-network.desktop
+sudo install -Dm644 data/com.github.adw-network.desktop /usr/share/applications/com.github.adw-network.desktop
 
 ```
 or
@@ -189,6 +201,14 @@ yay -S adw-network
 3. View connected profile details
 4. Use the context menu for connection actions
 
+### 🧭 Profiles Management
+
+1. Open the Profiles tab and create a new profile
+2. Set a profile name (for example: Home, Work, Public)
+3. Assign Wi-Fi/Ethernet connections to the profile
+4. Activate the profile directly from the Profiles tab
+5. The app enables auto-connect for assigned connections and disables it for others
+
 ---
 
 ## 🗂️ Project Structure
@@ -211,12 +231,14 @@ yay -S adw-network
 │   │   ├── 🦀 ethernet_page.rs
 │   │   ├── 🦀 hotspot_page.rs
 │   │   ├── 🦀 mod.rs
+│   │   ├── 🦀 profiles_page.rs
 │   │   └── 🦀 wifi_page.rs
 │   ├── 🦀 config.rs
 │   ├── 🦀 hotspot.rs
 │   ├── 🦀 lib.rs
 │   ├── 🦀 main.rs
 │   ├── 🦀 nm.rs
+│   ├── 🦀 profiles.rs
 │   ├── 🦀 qr.rs
 │   ├── 🦀 qr_dialog.rs
 │   ├── 🦀 secrets.rs
@@ -303,6 +325,8 @@ This is by design. Stop the hotspot before editing settings, then save and start
 ## 📝 Configuration
 
 - Hotspot config: `~/.config/adw-network/hotspot.json`
+- Profiles config: `~/.config/adw-network/profiles.json`
+- App settings: `~/.config/adw-network/settings.json`
 - Application logs: `~/.local/share/adw-network/adwaita-network.log`
 
 ---
@@ -338,7 +362,7 @@ This project is licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE) for 
 - [✔] Network speed monitoring
 - [✔] Custom DNS configuration
 - [✔] Ethernet connection management
-- [ ] Network profiles (home/work/public)
+- [✔] Network profiles (home/work/public)
 - [ ] Bandwidth limiting for hotspot
 - [ ] MAC address filtering for hotspot
 

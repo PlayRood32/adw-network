@@ -17,11 +17,15 @@ use std::time::Duration;
 use crate::config;
 use crate::hotspot;
 use crate::nm;
-use crate::ui::{icon_name, wifi_page::WifiPage, ethernet_page::EthernetPage, hotspot_page::HotspotPage, devices_page::DevicesPage};
+use crate::ui::{
+    devices_page::DevicesPage, ethernet_page::EthernetPage, hotspot_page::HotspotPage, icon_name,
+    profiles_page::ProfilesPage, wifi_page::WifiPage,
+};
 
 pub struct AppPrefs {
     pub auto_scan: bool,
     pub expand_connected_details: bool,
+    pub icons_only_navigation: bool,
 }
 
 impl Default for AppPrefs {
@@ -29,6 +33,7 @@ impl Default for AppPrefs {
         Self {
             auto_scan: true,
             expand_connected_details: false,
+            icons_only_navigation: true,
         }
     }
 }
@@ -46,12 +51,14 @@ impl AdwNetworkWindow {
         let prefs = Rc::new(RefCell::new(AppPrefs {
             auto_scan: app_settings.auto_scan,
             expand_connected_details: app_settings.expand_connected_details,
+            icons_only_navigation: app_settings.icons_only_navigation,
         }));
 
         let wifi_page = WifiPage::new(prefs.clone());
         let ethernet_page = EthernetPage::new();
         let hotspot_page = HotspotPage::new(prefs.clone());
         let devices_page = DevicesPage::new();
+        let profiles_page = ProfilesPage::new();
 
         let view_stack = adw::ViewStack::new();
         view_stack.connect_visible_child_notify(|stack| {
@@ -88,17 +95,25 @@ impl AdwNetworkWindow {
             &["network-workgroup-symbolic", "computer"][..],
         )));
 
+        let profiles_stack_page = view_stack.add_titled(&profiles_page.widget, Some("profiles"), "Profiles");
+        profiles_stack_page.set_icon_name(Some(icon_name(
+            "network-workgroup-symbolic",
+            &["folder-symbolic", "applications-system-symbolic"][..],
+        )));
+
         // Hide pages for unsupported hardware (refresh periodically)
         let wifi_page_ref = wifi_stack_page.clone();
         let hotspot_page_ref = hotspot_stack_page.clone();
         let ethernet_page_ref = ethernet_stack_page.clone();
         let devices_page_ref = devices_stack_page.clone();
+        let profiles_page_ref = profiles_stack_page.clone();
         let view_stack_ref = view_stack.clone();
         let update_visibility = move || {
             let wifi_page_ref = wifi_page_ref.clone();
             let hotspot_page_ref = hotspot_page_ref.clone();
             let ethernet_page_ref = ethernet_page_ref.clone();
             let devices_page_ref = devices_page_ref.clone();
+            let profiles_page_ref = profiles_page_ref.clone();
             let view_stack_ref = view_stack_ref.clone();
 
             glib::spawn_future_local(async move {
@@ -143,6 +158,9 @@ impl AdwNetworkWindow {
                     } else if devices_page_ref.is_visible() {
                         let child = devices_page_ref.child();
                         view_stack_ref.set_visible_child(&child);
+                    } else if profiles_page_ref.is_visible() {
+                        let child = profiles_page_ref.child();
+                        view_stack_ref.set_visible_child(&child);
                     }
                 }
             });
@@ -158,6 +176,15 @@ impl AdwNetworkWindow {
             .stack(&view_stack)
             .policy(adw::ViewSwitcherPolicy::Wide)
             .build();
+        Self::apply_navigation_mode(
+            &wifi_stack_page,
+            &ethernet_stack_page,
+            &hotspot_stack_page,
+            &devices_stack_page,
+            &profiles_stack_page,
+            &view_switcher,
+            app_settings.icons_only_navigation,
+        );
 
         // Global connection status header
         let status_icon = gtk4::Image::from_icon_name(icon_name(
@@ -191,17 +218,23 @@ impl AdwNetworkWindow {
 
         let title_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         title_box.add_css_class("header-title");
+        title_box.set_halign(gtk4::Align::Center);
         status_pill.set_halign(gtk4::Align::Center);
+        speed_box.set_halign(gtk4::Align::Center);
+        view_switcher.set_hexpand(false);
         view_switcher.set_halign(gtk4::Align::Center);
         title_box.append(&status_pill);
         title_box.append(&speed_box);
         title_box.append(&view_switcher);
 
         let menu_button = gtk4::MenuButton::builder()
-            .icon_name("open-menu-symbolic")
-            .tooltip_text("Menu")
+            .icon_name("emblem-system-symbolic")
+            .tooltip_text("Settings & About")
             .build();
         menu_button.add_css_class("menu-button");
+        menu_button.add_css_class("header-mini-button");
+        menu_button.set_size_request(16, 16);
+        menu_button.set_valign(gtk4::Align::Center);
         
         let menu = gio::Menu::new();
         menu.append(Some("Settings"), Some("app.settings"));
@@ -211,12 +244,17 @@ impl AdwNetworkWindow {
         let header = adw::HeaderBar::builder()
             .title_widget(&title_box)
             .build();
+        header.set_centering_policy(adw::CenteringPolicy::Strict);
 
-        // Show only a close button on the right side
+        // Restore default window close control.
         header.set_decoration_layout(Some(":close"));
 
+        // Keep settings near the close button on the right.
+        let right_controls = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+        right_controls.append(&menu_button);
+
         // Add buttons to the header
-        header.pack_end(&menu_button);
+        header.pack_end(&right_controls);
 
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header);
@@ -388,8 +426,8 @@ impl AdwNetworkWindow {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Adwaita Network")
-            .default_width(820)
-            .default_height(640)
+            .default_width(700)
+            .default_height(520)
             .content(&toolbar_view)
             .build();
 
@@ -406,9 +444,25 @@ impl AdwNetworkWindow {
         let window_weak = window.downgrade();
         let prefs_for_settings = prefs.clone();
         let wifi_for_settings = wifi_page.clone_ref();
+        let wifi_page_for_settings = wifi_stack_page.clone();
+        let ethernet_page_for_settings = ethernet_stack_page.clone();
+        let hotspot_page_for_settings = hotspot_stack_page.clone();
+        let devices_page_for_settings = devices_stack_page.clone();
+        let profiles_page_for_settings = profiles_stack_page.clone();
+        let view_switcher_for_settings = view_switcher.clone();
         settings_action.connect_activate(move |_, _| {
             if let Some(window) = window_weak.upgrade() {
-                Self::show_settings_window(&window, prefs_for_settings.clone(), wifi_for_settings.clone_ref());
+                Self::show_settings_window(
+                    &window,
+                    prefs_for_settings.clone(),
+                    wifi_for_settings.clone_ref(),
+                    wifi_page_for_settings.clone(),
+                    ethernet_page_for_settings.clone(),
+                    hotspot_page_for_settings.clone(),
+                    devices_page_for_settings.clone(),
+                    profiles_page_for_settings.clone(),
+                    view_switcher_for_settings.clone(),
+                );
             }
         });
         app.add_action(&settings_action);
@@ -430,7 +484,17 @@ impl AdwNetworkWindow {
         about.present(Some(window));
     }
 
-    fn show_settings_window(window: &adw::ApplicationWindow, prefs: Rc<RefCell<AppPrefs>>, wifi_page: WifiPage) {
+    fn show_settings_window(
+        window: &adw::ApplicationWindow,
+        prefs: Rc<RefCell<AppPrefs>>,
+        wifi_page: WifiPage,
+        wifi_stack_page: adw::ViewStackPage,
+        ethernet_stack_page: adw::ViewStackPage,
+        hotspot_stack_page: adw::ViewStackPage,
+        devices_stack_page: adw::ViewStackPage,
+        profiles_stack_page: adw::ViewStackPage,
+        view_switcher: adw::ViewSwitcher,
+    ) {
         let style_manager = adw::StyleManager::default();
         let settings_state = Rc::new(RefCell::new(
             config::load_app_settings(&config::app_settings_path()).unwrap_or_default(),
@@ -439,17 +503,9 @@ impl AdwNetworkWindow {
         let theme_model = gtk4::StringList::new(&["System", "Light", "Dark"][..]);
         let theme_combo = adw::ComboRow::builder()
             .title("Appearance")
-            .subtitle("Choose light or dark theme")
+            .subtitle("Follow system style or force light/dark")
             .model(&theme_model)
             .build();
-        let appearance_title = Self::title_with_info(
-            "Appearance",
-            "Choose light or dark theme",
-            "Select whether the app follows the system theme or forces light/dark.",
-        );
-        theme_combo.set_title("");
-        theme_combo.set_subtitle("");
-        theme_combo.add_prefix(&appearance_title);
 
         let selected = match style_manager.color_scheme() {
             adw::ColorScheme::ForceLight => 1,
@@ -473,158 +529,59 @@ impl AdwNetworkWindow {
 
         let group = adw::PreferencesGroup::new();
         group.set_title("General");
+        group.set_description(Some("Core app display and behavior settings."));
         group.add(&theme_combo);
 
         let storage_group = adw::PreferencesGroup::new();
         storage_group.set_title("Security");
-
-        let storage_row = adw::ActionRow::builder()
-            .title("")
-            .subtitle("")
-            .build();
-        let storage_title = Self::title_with_info(
-            "Hotspot password storage",
-            "Choose how hotspot passwords are stored",
-            "Pick where the hotspot password is stored and who manages it.",
-        );
-        storage_row.add_prefix(&storage_title);
+        storage_group.set_description(Some("How hotspot credentials are stored."));
 
         let storage_model = gtk4::StringList::new(&[
             "System Keyring (Recommended)",
             "NetworkManager keyring",
             "Plain JSON (Legacy)",
         ][..]);
-        let storage_tooltips = Rc::new(vec![
-            "Stores the hotspot password in the OS keyring (recommended).",
-            "Lets NetworkManager store the password in its keyring after activation.",
-            "Stores the password in the config JSON file (least secure).",
-        ]);
-
-        let storage_dropdown =
-            gtk4::DropDown::new(Some(storage_model.clone()), None::<gtk4::Expression>);
-        storage_dropdown.set_selected(Self::selection_from_password_storage(
+        let storage_row = adw::ComboRow::builder()
+            .title("Hotspot password storage")
+            .subtitle("Choose the credential backend for hotspot passwords")
+            .model(&storage_model)
+            .build();
+        storage_row.set_selected(Self::selection_from_password_storage(
             &settings_state.borrow().hotspot_password_storage,
         ));
 
-        let display_factory = gtk4::SignalListItemFactory::new();
-        display_factory.connect_setup(|_, list_item| {
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .unwrap();
-            let label = gtk4::Label::new(None);
-            label.set_xalign(0.0);
-            list_item.set_child(Some(&label));
-        });
-        display_factory.connect_bind(|_, list_item| {
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .unwrap();
-            let item = list_item
-                .item()
-                .and_downcast::<gtk4::StringObject>()
-                .unwrap();
-            let label = list_item
-                .child()
-                .and_downcast::<gtk4::Label>()
-                .unwrap();
-            label.set_text(&item.string());
-        });
-
-        let list_factory = gtk4::SignalListItemFactory::new();
-        let tooltips_for_list = storage_tooltips.clone();
-        list_factory.connect_setup(move |_, list_item| {
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .unwrap();
-            let box_ = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
-            let label = gtk4::Label::new(None);
-            label.set_xalign(0.0);
-            let info = gtk4::Button::builder()
-                .icon_name("help-about-symbolic")
-                .css_classes(vec![
-                    "flat".to_string(),
-                    "circular".to_string(),
-                    "info-inline".to_string(),
-                ])
-                .build();
-            info.set_focus_on_click(false);
-            info.set_can_focus(false);
-            box_.append(&label);
-            box_.append(&info);
-            list_item.set_child(Some(&box_));
-        });
-        list_factory.connect_bind(move |_, list_item| {
-            let list_item = list_item
-                .downcast_ref::<gtk4::ListItem>()
-                .unwrap();
-            let item = list_item
-                .item()
-                .and_downcast::<gtk4::StringObject>()
-                .unwrap();
-            let box_ = list_item
-                .child()
-                .and_downcast::<gtk4::Box>()
-                .unwrap();
-            let label = box_
-                .first_child()
-                .and_downcast::<gtk4::Label>()
-                .unwrap();
-            label.set_text(&item.string());
-            let info = box_
-                .last_child()
-                .and_downcast::<gtk4::Button>()
-                .unwrap();
-            let idx = list_item.position() as usize;
-            if let Some(tip) = tooltips_for_list.get(idx) {
-                info.set_tooltip_text(Some(tip));
-            }
-        });
-
-        storage_dropdown.set_factory(Some(&display_factory));
-        storage_dropdown.set_list_factory(Some(&list_factory));
-
         let settings_state_for_storage = settings_state.clone();
-        storage_dropdown.connect_selected_notify(move |dropdown| {
+        storage_row.connect_selected_notify(move |row| {
             let mut settings = settings_state_for_storage.borrow_mut();
             settings.hotspot_password_storage =
-                Self::password_storage_from_selection(dropdown.selected());
+                Self::password_storage_from_selection(row.selected());
             if let Err(e) = config::save_app_settings(&config::app_settings_path(), &*settings) {
                 log::warn!("Failed to save app settings: {}", e);
             }
         });
 
-        storage_row.add_suffix(&storage_dropdown);
         storage_group.add(&storage_row);
 
         let settings_state_for_switches = settings_state.clone();
         let auto_scan_row = adw::SwitchRow::builder()
             .title("Auto refresh networks")
-            .subtitle("Scan for networks automatically every 10 seconds")
+            .subtitle("Rescan nearby networks every 10 seconds")
             .active(settings_state_for_switches.borrow().auto_scan)
             .build();
-        let auto_scan_title = Self::title_with_info(
-            "Auto refresh networks",
-            "Scan for networks automatically every 10 seconds",
-            "Automatically rescans for nearby networks every 10 seconds.",
-        );
-        auto_scan_row.set_title("");
-        auto_scan_row.set_subtitle("");
-        auto_scan_row.add_prefix(&auto_scan_title);
 
         let settings_state_for_switches = settings_state.clone();
         let expand_details_row = adw::SwitchRow::builder()
             .title("Always show connection details")
-            .subtitle("Expand details on the connected network card")
+            .subtitle("Keep the connected network card expanded")
             .active(settings_state_for_switches.borrow().expand_connected_details)
             .build();
-        let expand_details_title = Self::title_with_info(
-            "Always show connection details",
-            "Expand details on the connected network card",
-            "Keeps the connected network card expanded to show details.",
-        );
-        expand_details_row.set_title("");
-        expand_details_row.set_subtitle("");
-        expand_details_row.add_prefix(&expand_details_title);
+
+        let settings_state_for_switches = settings_state.clone();
+        let nav_icons_only_row = adw::SwitchRow::builder()
+            .title("Top navigation icons only")
+            .subtitle("Hide tab text labels and keep icons only")
+            .active(settings_state_for_switches.borrow().icons_only_navigation)
+            .build();
 
         let prefs_for_auto_scan = prefs.clone();
         let settings_state_for_auto_scan = settings_state.clone();
@@ -652,10 +609,39 @@ impl AdwNetworkWindow {
             }
         });
 
+        let prefs_for_nav_mode = prefs.clone();
+        let settings_state_for_nav_mode = settings_state.clone();
+        let wifi_stack_page_for_nav = wifi_stack_page.clone();
+        let ethernet_stack_page_for_nav = ethernet_stack_page.clone();
+        let hotspot_stack_page_for_nav = hotspot_stack_page.clone();
+        let devices_stack_page_for_nav = devices_stack_page.clone();
+        let profiles_stack_page_for_nav = profiles_stack_page.clone();
+        let view_switcher_for_nav = view_switcher.clone();
+        nav_icons_only_row.connect_active_notify(move |row| {
+            let active = row.is_active();
+            prefs_for_nav_mode.borrow_mut().icons_only_navigation = active;
+            Self::apply_navigation_mode(
+                &wifi_stack_page_for_nav,
+                &ethernet_stack_page_for_nav,
+                &hotspot_stack_page_for_nav,
+                &devices_stack_page_for_nav,
+                &profiles_stack_page_for_nav,
+                &view_switcher_for_nav,
+                active,
+            );
+            let mut settings = settings_state_for_nav_mode.borrow_mut();
+            settings.icons_only_navigation = active;
+            if let Err(e) = config::save_app_settings(&config::app_settings_path(), &*settings) {
+                log::warn!("Failed to save app settings: {}", e);
+            }
+        });
+
         let personalization_group = adw::PreferencesGroup::new();
-        personalization_group.set_title("Personalization");
+        personalization_group.set_title("Behavior");
+        personalization_group.set_description(Some("Interaction and navigation preferences."));
         personalization_group.add(&auto_scan_row);
         personalization_group.add(&expand_details_row);
+        personalization_group.add(&nav_icons_only_row);
 
         let reset_button = gtk4::Button::builder()
             .label("Reset to defaults")
@@ -666,14 +652,6 @@ impl AdwNetworkWindow {
             .title("Reset settings")
             .subtitle("Clear all changes and restore defaults")
             .build();
-        let reset_title = Self::title_with_info(
-            "Reset settings",
-            "Clear all changes and restore defaults",
-            "Resets all settings to their default values.",
-        );
-        reset_row.set_title("");
-        reset_row.set_subtitle("");
-        reset_row.add_prefix(&reset_title);
         reset_row.add_suffix(&reset_button);
         reset_row.set_activatable_widget(Some(&reset_button));
 
@@ -685,10 +663,17 @@ impl AdwNetworkWindow {
         let prefs_for_reset = prefs.clone();
         let wifi_for_reset = wifi_page.clone_ref();
         let theme_combo_for_reset = theme_combo.clone();
-        let storage_dropdown_for_reset = storage_dropdown.clone();
+        let storage_row_for_reset = storage_row.clone();
         let auto_scan_for_reset = auto_scan_row.clone();
         let expand_details_for_reset = expand_details_row.clone();
+        let nav_icons_only_for_reset = nav_icons_only_row.clone();
         let style_manager_for_reset = style_manager.clone();
+        let wifi_stack_page_for_reset = wifi_stack_page.clone();
+        let ethernet_stack_page_for_reset = ethernet_stack_page.clone();
+        let hotspot_stack_page_for_reset = hotspot_stack_page.clone();
+        let devices_stack_page_for_reset = devices_stack_page.clone();
+        let profiles_stack_page_for_reset = profiles_stack_page.clone();
+        let view_switcher_for_reset = view_switcher.clone();
         reset_button.connect_clicked(move |_| {
             let defaults = config::AppSettings::default();
             if let Err(e) = config::save_app_settings(&config::app_settings_path(), &defaults) {
@@ -699,15 +684,26 @@ impl AdwNetworkWindow {
 
             prefs_for_reset.borrow_mut().auto_scan = defaults.auto_scan;
             prefs_for_reset.borrow_mut().expand_connected_details = defaults.expand_connected_details;
+            prefs_for_reset.borrow_mut().icons_only_navigation = defaults.icons_only_navigation;
 
             theme_combo_for_reset.set_selected(0);
             style_manager_for_reset.set_color_scheme(adw::ColorScheme::Default);
-            storage_dropdown_for_reset.set_selected(
+            storage_row_for_reset.set_selected(
                 Self::selection_from_password_storage(&defaults.hotspot_password_storage),
             );
 
             auto_scan_for_reset.set_active(defaults.auto_scan);
             expand_details_for_reset.set_active(defaults.expand_connected_details);
+            nav_icons_only_for_reset.set_active(defaults.icons_only_navigation);
+            Self::apply_navigation_mode(
+                &wifi_stack_page_for_reset,
+                &ethernet_stack_page_for_reset,
+                &hotspot_stack_page_for_reset,
+                &devices_stack_page_for_reset,
+                &profiles_stack_page_for_reset,
+                &view_switcher_for_reset,
+                defaults.icons_only_navigation,
+            );
             wifi_for_reset.apply_expand_details_setting(defaults.expand_connected_details);
         });
 
@@ -753,41 +749,6 @@ impl AdwNetworkWindow {
         }
     }
 
-    fn title_with_info(title: &str, subtitle: &str, tooltip: &str) -> gtk4::Box {
-        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        vbox.set_hexpand(true);
-
-        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
-        let label = gtk4::Label::new(Some(title));
-        label.set_xalign(0.0);
-        label.add_css_class("row-title");
-
-        let info = gtk4::Button::builder()
-            .icon_name("help-about-symbolic")
-            .tooltip_text(tooltip)
-            .css_classes(vec![
-                "flat".to_string(),
-                "circular".to_string(),
-                "info-inline".to_string(),
-            ])
-            .build();
-        info.set_focus_on_click(false);
-        info.set_can_focus(false);
-
-        hbox.append(&label);
-        hbox.append(&info);
-
-        let subtitle_label = gtk4::Label::new(Some(subtitle));
-        subtitle_label.set_xalign(0.0);
-        subtitle_label.set_wrap(true);
-        subtitle_label.set_opacity(0.7);
-        subtitle_label.add_css_class("row-subtitle");
-
-        vbox.append(&hbox);
-        vbox.append(&subtitle_label);
-        vbox
-    }
-
     fn password_storage_from_selection(selected: u32) -> config::HotspotPasswordStorage {
         match selected {
             1 => config::HotspotPasswordStorage::NetworkManager,
@@ -804,6 +765,53 @@ impl AdwNetworkWindow {
         }
     }
 
+    fn apply_navigation_mode(
+        wifi_stack_page: &adw::ViewStackPage,
+        ethernet_stack_page: &adw::ViewStackPage,
+        hotspot_stack_page: &adw::ViewStackPage,
+        devices_stack_page: &adw::ViewStackPage,
+        profiles_stack_page: &adw::ViewStackPage,
+        view_switcher: &adw::ViewSwitcher,
+        icons_only: bool,
+    ) {
+        let wifi_title = if icons_only { "" } else { "Wi-Fi" };
+        let ethernet_title = if icons_only { "" } else { "Ethernet" };
+        let hotspot_title = if icons_only { "" } else { "Hotspot" };
+        let devices_title = if icons_only { "" } else { "Devices" };
+        let profiles_title = if icons_only { "" } else { "Profiles" };
+
+        wifi_stack_page.set_title(Some(wifi_title));
+        ethernet_stack_page.set_title(Some(ethernet_title));
+        hotspot_stack_page.set_title(Some(hotspot_title));
+        devices_stack_page.set_title(Some(devices_title));
+        profiles_stack_page.set_title(Some(profiles_title));
+
+        Self::apply_view_switcher_tooltips(
+            view_switcher,
+            &["Wi-Fi", "Ethernet", "Hotspot", "Devices", "Profiles"],
+        );
+    }
+
+    fn apply_view_switcher_tooltips(view_switcher: &adw::ViewSwitcher, tooltips: &[&str]) {
+        fn walk(widget: &gtk4::Widget, tooltips: &[&str], idx: &mut usize) {
+            if let Ok(button) = widget.clone().downcast::<gtk4::ToggleButton>() {
+                if let Some(text) = tooltips.get(*idx) {
+                    button.set_tooltip_text(Some(text));
+                }
+                *idx += 1;
+            }
+
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                walk(&current, tooltips, idx);
+                child = current.next_sibling();
+            }
+        }
+
+        let root: &gtk4::Widget = view_switcher.upcast_ref();
+        let mut idx = 0usize;
+        walk(root, tooltips, &mut idx);
+    }
 
     fn load_css() {
         let provider = gtk4::CssProvider::new();
@@ -837,23 +845,6 @@ button.flat.circular {
     min-width: 32px;
     min-height: 32px;
     padding: 0;
-}
-
-button.info-inline {
-    min-width: 20px;
-    min-height: 20px;
-    padding: 0;
-    margin: 0;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-}
-
-button.info-inline:hover,
-button.info-inline:active,
-button.info-inline:focus {
-    background: transparent;
-    box-shadow: none;
 }
 
 button.touch-target {
@@ -890,10 +881,11 @@ headerbar windowcontrols button.close,
 headerbar button.close,
 .titlebar windowcontrols button.close,
 .titlebar button.close {
-    min-width: 1px;
-    min-height: 1px;
-    padding: 10px;
-    border-radius: 0px;
+    min-width: 18px;
+    min-height: 18px;
+    padding: 0;
+    margin: 0;
+    border-radius: 4px;
 }
 
 /* Hide dialog close buttons (only show close on main window) */
@@ -1169,14 +1161,33 @@ popover.menu button:last-child {
 
 /* Header menu button hitbox */
 button.menu-button {
-    padding: 2px 4px;
-    min-width: 30px;
-    min-height: 30px;
-    border-radius: 8px;
+    padding: 0;
+    min-width: 18px;
+    min-height: 18px;
+    border-radius: 4px;
 }
 
 button.menu-button:hover {
     background: transparent;
+}
+
+button.header-mini-button {
+    min-width: 18px;
+    min-height: 18px;
+    padding: 0;
+    border-radius: 4px;
+}
+
+headerbar button.header-mini-button {
+    min-width: 16px;
+    min-height: 16px;
+    padding: 0;
+    margin: 0;
+    border-radius: 4px;
+}
+
+headerbar button.window-close {
+    border-radius: 999px;
 }
 
 /* Network subtitle styling */

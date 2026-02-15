@@ -2,6 +2,7 @@
 // Location: /src/secrets.rs
 
 use anyhow::{Result, anyhow};
+use keyring::Error as KeyringError;
 
 const KEYRING_SERVICE: &str = "adw-network";
 const KEYRING_USERNAME: &str = "hotspot-password";
@@ -24,8 +25,10 @@ pub fn load_hotspot_password() -> Result<Option<String>> {
 
 pub fn delete_hotspot_password() -> Result<()> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
-    entry
-        .set_password("")
-        .map_err(|e| anyhow!("Keyring clear failed: {}", e))?;
+    match entry.delete_credential() {
+        Ok(()) => {}
+        Err(KeyringError::NoEntry) => {}
+        Err(e) => return Err(anyhow!("Keyring clear failed: {}", e)),
+    }
     Ok(())
 }

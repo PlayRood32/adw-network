@@ -19,6 +19,7 @@ pub struct DevicesPage {
     empty_state: adw::StatusPage,
     refresh_button: gtk4::Button,
     auto_refresh_active: std::rc::Rc<std::cell::Cell<bool>>,
+    refresh_in_flight: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +113,7 @@ impl DevicesPage {
         widget.append(&toast_overlay);
 
         let auto_refresh_active = std::rc::Rc::new(std::cell::Cell::new(true));
+        let refresh_in_flight = std::rc::Rc::new(std::cell::Cell::new(false));
 
         let page = Self {
             widget,
@@ -120,6 +122,7 @@ impl DevicesPage {
             empty_state,
             refresh_button: refresh_button.clone(),
             auto_refresh_active: auto_refresh_active.clone(),
+            refresh_in_flight: refresh_in_flight.clone(),
         };
 
         // Initial refresh
@@ -154,10 +157,10 @@ impl DevicesPage {
         // Auto-refresh every 5 seconds
         let page_ref = page.clone_ref();
         glib::timeout_add_seconds_local(5, move || {
-            if !page_ref.auto_refresh_active.get() {
+            if page_ref.refresh_in_flight.get() {
                 return glib::ControlFlow::Continue;
             }
-            
+
             let page = page_ref.clone_ref();
             glib::spawn_future_local(async move {
                 match hotspot::is_hotspot_active().await {
@@ -185,10 +188,15 @@ impl DevicesPage {
             empty_state: self.empty_state.clone(),
             refresh_button: self.refresh_button.clone(),
             auto_refresh_active: self.auto_refresh_active.clone(),
+            refresh_in_flight: self.refresh_in_flight.clone(),
         }
     }
 
     pub async fn refresh_devices(&self) {
+        if self.refresh_in_flight.get() {
+            return;
+        }
+        self.refresh_in_flight.set(true);
         self.refresh_button.set_sensitive(false);
         self.list_box.add_css_class("list-loading");
         
@@ -211,6 +219,7 @@ impl DevicesPage {
         
         self.refresh_button.set_sensitive(true);
         self.list_box.remove_css_class("list-loading");
+        self.refresh_in_flight.set(false);
     }
 
     async fn get_connected_devices(&self) -> Result<Vec<ConnectedDevice>> {

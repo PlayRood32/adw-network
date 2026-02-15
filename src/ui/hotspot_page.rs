@@ -685,12 +685,8 @@ impl HotspotPage {
         }
 
         let storage = self.load_password_storage();
-        if let Err(e) = self.persist_password_for_storage(&storage, &config.password) {
-            log::error!("Failed to store hotspot password: {}", e);
-            self.show_toast(&format!("Failed to store hotspot password: {}", e));
-        }
-
-        let config_to_save = Self::config_for_storage(&config, &storage);
+        let config_storage = self.persist_password_with_fallback(&storage, &config.password);
+        let config_to_save = Self::config_for_storage(&config, &config_storage);
         if let Err(e) = config::save_config(&config::hotspot_config_path(), &config_to_save) {
             log::error!("Failed to save configuration: {}", e);
             self.show_toast(&format!("Failed to save configuration: {}", e));
@@ -759,8 +755,8 @@ impl HotspotPage {
 
         match hotspot::create_hotspot_on(&config, interface).await {
             Ok(_) => {
-                let _ = self.persist_password_for_storage(&storage, &config.password);
-                let config_to_save = Self::config_for_storage(&config, &storage);
+                let config_storage = self.persist_password_with_fallback(&storage, &config.password);
+                let config_to_save = Self::config_for_storage(&config, &config_storage);
                 let _ = config::save_config(&config::hotspot_config_path(), &config_to_save);
                 self.is_active.set(true);
                 self.show_toast("Hotspot started successfully");
@@ -963,7 +959,7 @@ impl HotspotPage {
         let storage = self.load_password_storage();
         let password = self.resolve_password_for_storage(&storage, None).await;
 
-        qr_dialog::show_qr_dialog(&ssid, &password, 200, &self.toast_overlay).await;
+        qr_dialog::show_qr_dialog(&ssid, &password, None, 200, &self.toast_overlay).await;
     }
 
     fn show_toast(&self, message: &str) {
@@ -1022,14 +1018,26 @@ impl HotspotPage {
         }
     }
 
-    fn config_for_storage(config: &HotspotConfig, storage: &HotspotPasswordStorage) -> HotspotConfig {
-        if *storage == HotspotPasswordStorage::PlainJson {
-            config.clone()
-        } else {
-            let mut scrubbed = config.clone();
-            scrubbed.password.clear();
-            scrubbed
+    fn persist_password_with_fallback(
+        &self,
+        storage: &HotspotPasswordStorage,
+        password: &str,
+    ) -> HotspotPasswordStorage {
+        match self.persist_password_for_storage(storage, password) {
+            Ok(()) => storage.clone(),
+            Err(e) => {
+                log::error!("Failed to store hotspot password: {}", e);
+                self.show_toast(&format!(
+                    "Could not access secure storage; password will be saved locally"
+                ));
+                HotspotPasswordStorage::PlainJson
+            }
         }
+    }
+
+    fn config_for_storage(config: &HotspotConfig, storage: &HotspotPasswordStorage) -> HotspotConfig {
+        let _ = storage;
+        config.clone()
     }
 }
 

@@ -7,3 +7,4 @@ pub mod hotspot;
 pub mod qr;
 pub mod qr_dialog;
 pub mod secrets;
+pub mod profiles;

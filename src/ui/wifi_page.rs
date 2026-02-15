@@ -10,14 +10,14 @@ use gtk4::glib;
 use libadwaita::{self as adw, prelude::*};
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::nm::{self, WifiNetwork};
 use crate::qr_dialog;
 use crate::ui::icon_name;
 use crate::window::AppPrefs;
-use tokio::sync::oneshot;
+
 
 pub struct WifiPage {
     pub widget: gtk4::Box,
@@ -38,6 +38,8 @@ pub struct WifiPage {
     other_header: gtk4::Label,
     other_list: gtk4::ListBox,
     empty_state: adw::StatusPage,
+    empty_action: gtk4::Button,
+    busy_count: Rc<Cell<u32>>,
     search_text: Rc<RefCell<String>>,
     all_networks: Rc<RefCell<Vec<WifiNetwork>>>,
     saved_ssids: Rc<RefCell<HashSet<String>>>,
@@ -254,11 +256,18 @@ impl WifiPage {
             .build();
         empty_state.set_visible(false);
 
+        let empty_action = gtk4::Button::builder()
+            .label("Turn On Wi-Fi")
+            .css_classes(vec!["suggested-action".to_string()])
+            .build();
+        empty_action.set_visible(false);
+
         content.append(&known_header);
         content.append(&known_list);
         content.append(&other_header);
         content.append(&other_list);
         content.append(&empty_state);
+        content.append(&empty_action);
 
         scrolled.set_child(Some(&content));
         toast_overlay.set_child(Some(&scrolled));
@@ -269,6 +278,7 @@ impl WifiPage {
         let saved_ssids = Rc::new(RefCell::new(HashSet::new()));
         let filter_state = Rc::new(RefCell::new(WifiFilter::All));
         let connected_network = Rc::new(RefCell::new(None));
+        let busy_count = Rc::new(Cell::new(0));
 
         let page = Self {
             widget,
@@ -289,6 +299,7 @@ impl WifiPage {
             other_header: other_header.clone(),
             other_list: other_list.clone(),
             empty_state: empty_state.clone(),
+            empty_action: empty_action.clone(),
             search_text,
             all_networks,
             saved_ssids,
@@ -298,6 +309,7 @@ impl WifiPage {
             filter_5: filter_5.clone(),
             filter_saved: filter_saved.clone(),
             connected_network,
+            busy_count,
             prefs,
         };
 
@@ -421,6 +433,12 @@ impl WifiPage {
             });
         });
 
+        let page_ref = page.clone_ref();
+        empty_action.connect_clicked(move |_| {
+            let page = page_ref.clone_ref();
+            page.wifi_switch.set_active(true);
+        });
+
         // Auto-refresh every 10 seconds
         let page_ref = page.clone_ref();
         glib::timeout_add_seconds_local(10, move || {
@@ -456,6 +474,7 @@ impl WifiPage {
             other_header: self.other_header.clone(),
             other_list: self.other_list.clone(),
             empty_state: self.empty_state.clone(),
+            empty_action: self.empty_action.clone(),
             search_text: self.search_text.clone(),
             all_networks: self.all_networks.clone(),
             saved_ssids: self.saved_ssids.clone(),
@@ -465,7 +484,34 @@ impl WifiPage {
             filter_5: self.filter_5.clone(),
             filter_saved: self.filter_saved.clone(),
             connected_network: self.connected_network.clone(),
+            busy_count: self.busy_count.clone(),
             prefs: self.prefs.clone(),
+        }
+    }
+
+    fn set_busy(&self, busy: bool) {
+        let current = self.busy_count.get();
+        let next = if busy {
+            current.saturating_add(1)
+        } else {
+            current.saturating_sub(1)
+        };
+        self.busy_count.set(next);
+        if next > 0 {
+            self.spinner.set_visible(true);
+            self.spinner.start();
+            self.refresh_button.set_sensitive(false);
+        } else {
+            self.spinner.stop();
+            self.spinner.set_visible(false);
+            self.refresh_button.set_sensitive(true);
+        }
+    }
+
+    fn busy_guard(&self) -> BusyGuard {
+        self.set_busy(true);
+        BusyGuard {
+            page: self.clone_ref(),
         }
     }
 
@@ -504,9 +550,7 @@ impl WifiPage {
     }
 
     async fn refresh_networks(&self) {
-        self.spinner.set_visible(true);
-        self.spinner.start();
-        self.refresh_button.set_sensitive(false);
+        let _busy = self.busy_guard();
         self.known_list.add_css_class("list-loading");
         self.other_list.add_css_class("list-loading");
 
@@ -524,9 +568,6 @@ impl WifiPage {
             }
         }
 
-        self.spinner.stop();
-        self.spinner.set_visible(false);
-        self.refresh_button.set_sensitive(true);
         self.known_list.remove_css_class("list-loading");
         self.other_list.remove_css_class("list-loading");
     }
@@ -644,6 +685,7 @@ impl WifiPage {
         }
 
         self.empty_state.set_visible(false);
+        self.empty_action.set_visible(false);
 
         let saved = self.saved_ssids.borrow();
         let mut known = Vec::new();
@@ -684,6 +726,18 @@ impl WifiPage {
         self.other_list.set_visible(show_other);
 
         if !show_known && !show_other && connected.is_none() {
+            let wifi_enabled = self.wifi_switch.is_active();
+            if wifi_enabled {
+                self.empty_state.set_title("No Networks Found");
+                self.empty_state
+                    .set_description(Some("Refresh or wait for networks to appear"));
+                self.empty_action.set_visible(false);
+            } else {
+                self.empty_state.set_title("Wi-Fi is Off");
+                self.empty_state
+                    .set_description(Some("Turn on Wi-Fi to scan for networks"));
+                self.empty_action.set_visible(true);
+            }
             self.empty_state.set_visible(true);
         }
     }
@@ -1038,9 +1092,14 @@ impl WifiPage {
     }
 
     async fn show_password_dialog(&self, network: &WifiNetwork) {
-        let dialog = adw::Dialog::builder()
-            .title(format!("Connect to {}", network.ssid))
-            .content_width(420)
+        self.show_password_dialog_for_ssid(&network.ssid, Some(&network.security_type))
+            .await;
+    }
+
+    async fn show_password_dialog_for_ssid(&self, ssid: &str, security_type: Option<&str>) {
+        let password_entry = adw::PasswordEntryRow::builder()
+            .title("Password")
+            .activates_default(true)
             .build();
 
         let content_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
@@ -1048,76 +1107,39 @@ impl WifiPage {
         content_box.set_margin_bottom(12);
         content_box.set_margin_start(12);
         content_box.set_margin_end(12);
-
-        let subtitle = gtk4::Label::new(Some("Enter the network password"));
-        subtitle.set_xalign(0.0);
-        subtitle.set_opacity(0.7);
-        content_box.append(&subtitle);
-
-        let password_entry = adw::PasswordEntryRow::builder()
-            .title("Password")
-            .activates_default(true)
-            .build();
         content_box.append(&password_entry);
 
-        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-        buttons.set_halign(gtk4::Align::End);
-        buttons.set_margin_top(12);
-
-        let cancel_btn = gtk4::Button::builder()
-            .label("Cancel")
-            .css_classes(vec!["flat".to_string()])
+        let dialog = adw::AlertDialog::builder()
+            .heading(format!("Connect to {}", ssid))
+            .body("Enter the network password")
+            .extra_child(&content_box)
+            .default_response("connect")
+            .close_response("cancel")
             .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("connect", "Connect")][..]);
+        dialog.set_response_appearance("connect", adw::ResponseAppearance::Suggested);
 
-        let connect_btn = gtk4::Button::builder()
-            .label("Connect")
-            .css_classes(vec!["suggested-action".to_string()])
-            .build();
-
-        let dialog_close = dialog.clone();
-        cancel_btn.connect_clicked(move |_| {
-            dialog_close.close();
-        });
-
-        let page = self.clone_ref();
-        let ssid = network.ssid.clone();
-        let security_type = network.security_type.clone();
-        let password_entry_for_connect = password_entry.clone();
-        let dialog_close = dialog.clone();
-        connect_btn.connect_clicked(move |_| {
-            let password = password_entry_for_connect.text().to_string();
-            let page = page.clone_ref();
-            let ssid = ssid.clone();
-            let security_type = security_type.clone();
-
-            dialog_close.close();
-            if !password.is_empty() {
-                glib::spawn_future_local(async move {
-                    page.connect_secured_network(&ssid, &password, Some(&security_type))
-                        .await;
-                });
-            }
-        });
-
-        let connect_btn_trigger = connect_btn.clone();
-        password_entry.connect_entry_activated(move |_| {
-            connect_btn_trigger.emit_clicked();
-        });
-
-        buttons.append(&cancel_btn);
-        buttons.append(&connect_btn);
-        content_box.append(&buttons);
-
-        dialog.set_default_widget(Some(&connect_btn));
-        dialog.set_child(Some(&content_box));
-        if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
-            dialog.present(Some(parent));
+        let response = if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
+            dialog.choose_future(Some(parent)).await
         } else {
-            dialog.present(None::<&gtk4::Window>);
+            dialog.choose_future(None::<&gtk4::Window>).await
+        };
+
+        if response.as_str() != "connect" {
+            return;
         }
+
+        let password = password_entry.text().to_string();
+        if password.is_empty() {
+            self.show_toast("Please enter a password");
+            return;
+        }
+
+        self.connect_secured_network(ssid, &password, security_type).await;
     }
 
     async fn connect_open_network(&self, ssid: &str) {
+        let _busy = self.busy_guard();
         self.show_toast("Connecting...");
         
         match nm::connect_open_network(ssid).await {
@@ -1142,6 +1164,7 @@ impl WifiPage {
         password: &str,
         security_type: Option<&str>,
     ) {
+        let _busy = self.busy_guard();
         self.show_toast("Connecting...");
         
         match nm::connect_secured_network(ssid, password, security_type).await {
@@ -1162,8 +1185,12 @@ impl WifiPage {
 
     async fn connect_saved_network(&self, ssid: &str) {
         self.show_toast("Connecting...");
-        
-        match nm::activate_saved_connection(ssid).await {
+
+        let activation_result = {
+            let _busy = self.busy_guard();
+            nm::activate_saved_connection(ssid).await
+        };
+        match activation_result {
             Ok(nm::ConnectStatus::Connected) => {
                 self.show_toast(&format!("Connected to {}", ssid));
                 self.refresh_networks().await;
@@ -1182,6 +1209,7 @@ impl WifiPage {
                         .iter()
                         .find(|n| n.ssid == ssid)
                         .map(|n| n.security_type.clone());
+                    let security_type = security_type.filter(|s| s != "Saved");
                     if let Ok(password) = nm::get_saved_password_for_ssid(ssid).await {
                         match nm::connect_secured_network(
                             ssid,
@@ -1205,20 +1233,9 @@ impl WifiPage {
                         }
                         return;
                     } else {
-                        match nm::connect_open_network(ssid).await {
-                            Ok(nm::ConnectStatus::Connected) => {
-                                self.show_toast(&format!("Connected to {}", ssid));
-                                self.refresh_networks().await;
-                            }
-                            Ok(nm::ConnectStatus::Queued) => {
-                                self.show_toast("Connection queued...");
-                                self.refresh_networks().await;
-                            }
-                            Err(e) => {
-                                log::error!("Connection failed: {}", e);
-                                self.show_toast(&format!("Failed to connect: {}", e));
-                            }
-                        }
+                        self.show_toast("Password required to connect");
+                        self.show_password_dialog_for_ssid(ssid, security_type.as_deref())
+                            .await;
                         return;
                     }
                 }
@@ -1252,75 +1269,34 @@ impl WifiPage {
     }
 
     async fn forget_network(&self, ssid: &str) {
-        let dialog = adw::Dialog::builder()
-            .title("Forget Network?")
-            .content_width(420)
+        let dialog = adw::AlertDialog::builder()
+            .heading("Forget Network?")
+            .body(format!("This will remove {} from saved networks.", ssid))
+            .default_response("forget")
+            .close_response("cancel")
             .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("forget", "Forget")][..]);
+        dialog.set_response_appearance("forget", adw::ResponseAppearance::Destructive);
 
-        let content_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-        content_box.set_margin_top(12);
-        content_box.set_margin_bottom(12);
-        content_box.set_margin_start(12);
-        content_box.set_margin_end(12);
-
-        let subtitle = gtk4::Label::new(Some(&format!(
-            "This will remove {} from saved networks.",
-            ssid
-        )));
-        subtitle.set_xalign(0.0);
-        subtitle.set_opacity(0.7);
-        content_box.append(&subtitle);
-
-        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-        buttons.set_halign(gtk4::Align::End);
-        buttons.set_margin_top(12);
-
-        let cancel_btn = gtk4::Button::builder()
-            .label("Cancel")
-            .css_classes(vec!["flat".to_string()])
-            .build();
-
-        let forget_btn = gtk4::Button::builder()
-            .label("Forget")
-            .css_classes(vec!["destructive-action".to_string()])
-            .build();
-
-        let dialog_close = dialog.clone();
-        cancel_btn.connect_clicked(move |_| {
-            dialog_close.close();
-        });
-
-        let page = self.clone_ref();
-        let ssid = ssid.to_string();
-        let dialog_close = dialog.clone();
-        forget_btn.connect_clicked(move |_| {
-            let page = page.clone_ref();
-            let ssid = ssid.clone();
-            dialog_close.close();
-
-            glib::spawn_future_local(async move {
-                match nm::delete_connection_by_ssid(&ssid).await {
-                    Ok(_) => {
-                        page.show_toast(&format!("Removed {}", ssid));
-                        page.refresh_networks().await;
-                    }
-                    Err(e) => {
-                        log::error!("Failed to forget network: {}", e);
-                        page.show_toast(&format!("Failed to remove: {}", e));
-                    }
-                }
-            });
-        });
-
-        buttons.append(&cancel_btn);
-        buttons.append(&forget_btn);
-        content_box.append(&buttons);
-
-        dialog.set_child(Some(&content_box));
-        if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
-            dialog.present(Some(parent));
+        let response = if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
+            dialog.choose_future(Some(parent)).await
         } else {
-            dialog.present(None::<&gtk4::Window>);
+            dialog.choose_future(None::<&gtk4::Window>).await
+        };
+
+        if response.as_str() != "forget" {
+            return;
+        }
+
+        match nm::delete_connection_by_ssid(ssid).await {
+            Ok(_) => {
+                self.show_toast(&format!("Removed {}", ssid));
+                self.refresh_networks().await;
+            }
+            Err(e) => {
+                log::error!("Failed to forget network: {}", e);
+                self.show_toast(&format!("Failed to remove: {}", e));
+            }
         }
     }
 
@@ -1331,6 +1307,7 @@ impl WifiPage {
                 qr_dialog::show_qr_dialog(
                     &network.ssid,
                     &password,
+                    Some(network.security_type.as_str()),
                     300,
                     &self.toast_overlay,
                 )
@@ -1342,6 +1319,7 @@ impl WifiPage {
                     qr_dialog::show_qr_dialog(
                         &network.ssid,
                         &password,
+                        Some(network.security_type.as_str()),
                         300,
                         &self.toast_overlay,
                     )
@@ -1359,9 +1337,9 @@ impl WifiPage {
     }
 
     async fn prompt_qr_password(&self, ssid: &str) -> Option<String> {
-        let dialog = adw::Dialog::builder()
-            .title(format!("QR Code for {}", ssid))
-            .content_width(420)
+        let password_entry = adw::PasswordEntryRow::builder()
+            .title("Password")
+            .activates_default(true)
             .build();
 
         let content_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
@@ -1369,70 +1347,34 @@ impl WifiPage {
         content_box.set_margin_bottom(12);
         content_box.set_margin_start(12);
         content_box.set_margin_end(12);
-
-        let subtitle = gtk4::Label::new(Some("Enter the network password to generate a QR code"));
-        subtitle.set_xalign(0.0);
-        subtitle.set_opacity(0.7);
-        content_box.append(&subtitle);
-
-        let password_entry = adw::PasswordEntryRow::builder()
-            .title("Password")
-            .build();
         content_box.append(&password_entry);
 
-        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-        buttons.set_halign(gtk4::Align::End);
-        buttons.set_margin_top(12);
-
-        let cancel_btn = gtk4::Button::builder()
-            .label("Cancel")
-            .css_classes(vec!["flat".to_string()])
+        let dialog = adw::AlertDialog::builder()
+            .heading(format!("QR Code for {}", ssid))
+            .body("Enter the network password to generate a QR code")
+            .extra_child(&content_box)
+            .default_response("generate")
+            .close_response("cancel")
             .build();
-        let generate_btn = gtk4::Button::builder()
-            .label("Generate")
-            .css_classes(vec!["suggested-action".to_string()])
-            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("generate", "Generate")][..]);
+        dialog.set_response_appearance("generate", adw::ResponseAppearance::Suggested);
 
-        let (tx, rx) = oneshot::channel::<Option<String>>();
-        let tx_cell = std::rc::Rc::new(std::cell::RefCell::new(Some(tx)));
-
-        let dialog_close = dialog.clone();
-        let tx_cancel = tx_cell.clone();
-        cancel_btn.connect_clicked(move |_| {
-            if let Some(tx) = tx_cancel.borrow_mut().take() {
-                let _ = tx.send(None);
-            }
-            dialog_close.close();
-        });
-
-        let dialog_close = dialog.clone();
-        let tx_generate = tx_cell.clone();
-        generate_btn.connect_clicked(move |_| {
-            let password = password_entry.text().to_string();
-            if password.is_empty() {
-                return;
-            }
-            if let Some(tx) = tx_generate.borrow_mut().take() {
-                let _ = tx.send(Some(password));
-            }
-            dialog_close.close();
-        });
-
-        buttons.append(&cancel_btn);
-        buttons.append(&generate_btn);
-        content_box.append(&buttons);
-
-        dialog.set_child(Some(&content_box));
-        if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
-            dialog.present(Some(parent));
+        let response = if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
+            dialog.choose_future(Some(parent)).await
         } else {
-            dialog.present(None::<&gtk4::Window>);
+            dialog.choose_future(None::<&gtk4::Window>).await
+        };
+
+        if response.as_str() != "generate" {
+            return None;
         }
 
-        match rx.await {
-            Ok(Some(password)) => Some(password),
-            _ => None,
+        let password = password_entry.text().to_string();
+        if password.is_empty() {
+            return None;
         }
+
+        Some(password)
     }
 
     async fn show_network_info_dialog(&self, network: &WifiNetwork) {
@@ -1706,7 +1648,7 @@ impl WifiPage {
                         }
                         page.show_toast("Custom DNS applied");
                     }
-                    Ok(None) => {
+                    Ok(std::prelude::v1::None) => {
                         page.show_toast("No active connection found");
                     }
                     Err(e) => {
@@ -1912,6 +1854,16 @@ impl WifiPage {
     }
 }
 
+struct BusyGuard {
+    page: WifiPage,
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.page.set_busy(false);
+    }
+}
+
 fn get_signal_icon(signal: u8) -> &'static str {
     if signal >= 75 {
         "network-wireless-signal-excellent-symbolic"
@@ -1931,8 +1883,10 @@ fn get_signal_strength_text(signal: u8) -> String {
         "Good"
     } else if signal >= 25 {
         "Fair"
-    } else {
+    } else if signal >= 10 {
         "Weak"
+    } else {
+        "Very weak"
     };
     format!("{} ({}%)", quality, signal)
 }

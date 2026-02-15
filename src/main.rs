@@ -15,6 +15,7 @@ mod qr_dialog;
 mod config;
 mod ui;
 mod secrets;
+mod profiles;
 
 use window::AdwNetworkWindow;
 
