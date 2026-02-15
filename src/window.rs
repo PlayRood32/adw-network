@@ -475,7 +475,7 @@ impl AdwNetworkWindow {
             .application_name("Adwaita Network")
             .application_icon("icon")
             .developer_name("PlayRood")
-            .version("0.1.4")
+            .version("0.1.5")
             .comments("A modern network management application built with libadwaita")
             .website("https://github.com/PlayRood/adw-network")
             .license_type(gtk4::License::Gpl30)
