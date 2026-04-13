@@ -2,14 +2,14 @@
 // Location: /src/qr.rs
 
 use anyhow::Result;
-use qrcode::QrCode;
+use image::{ImageBuffer, Luma};
 use qrcode::Color;
-use image::{Luma, ImageBuffer};
+use qrcode::QrCode;
 
 pub fn generate_bytes_for_pixbuf(data: &str) -> Result<(Vec<u8>, i32, i32)> {
     let code = QrCode::new(data)?;
-    let size = code.width() as usize;
-    let scale = 4;
+    let size = code.width();
+    let scale = 6;
     let img_size = size * scale;
 
     let mut img = ImageBuffer::new(img_size as u32, img_size as u32);
@@ -25,11 +25,7 @@ pub fn generate_bytes_for_pixbuf(data: &str) -> Result<(Vec<u8>, i32, i32)> {
             if code[(x, y)] == Color::Dark {
                 for dy in 0..scale {
                     for dx in 0..scale {
-                        img.put_pixel(
-                            (x * scale + dx) as u32,
-                            (y * scale + dy) as u32,
-                            Luma([0]),
-                        );
+                        img.put_pixel((x * scale + dx) as u32, (y * scale + dy) as u32, Luma([0]));
                     }
                 }
             }

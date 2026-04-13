@@ -1,31 +1,36 @@
-// File: wifi_page.rs
-// Location: /src/ui/wifi_page.rs
-//
-// Credits & Inspirations:
-// - airctl (pshycodr) for excellent UI/UX patterns, network info display, and search features
-// - GNOME Settings Network panel
+// * Credits and inspirations:
+// * airctl (pshycodr) for network-focused UI patterns.
+// * GNOME Settings Network panel.
 
-use gtk4::prelude::*;
 use gtk4::glib;
+use gtk4::prelude::*;
 use libadwaita::{self as adw, prelude::*};
+use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::net::IpAddr;
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
 use crate::nm::{self, WifiNetwork};
 use crate::qr_dialog;
-use crate::ui::icon_name;
-use crate::window::AppPrefs;
+use crate::state::{AppState, PageKind, WifiFilterState};
+use crate::ui::{common, icon_name};
 
+mod actions;
+mod details;
+mod dialogs;
+use actions::BusyGuard;
+use details::{get_signal_icon, get_signal_strength_text, invalid_ip_entries};
+use dialogs::parse_entry_list;
 
+#[derive(Clone)]
 pub struct WifiPage {
     pub widget: gtk4::Box,
     toast_overlay: adw::ToastOverlay,
     wifi_switch: adw::SwitchRow,
+    #[allow(dead_code)]
     search_entry: gtk4::SearchEntry,
+    hidden_network_button: gtk4::Button,
     refresh_button: gtk4::Button,
     spinner: gtk4::Spinner,
+    operation_status_label: gtk4::Label,
     connected_card: gtk4::Box,
     connected_ssid: gtk4::Label,
     connected_subtitle: gtk4::Label,
@@ -39,29 +44,15 @@ pub struct WifiPage {
     other_list: gtk4::ListBox,
     empty_state: adw::StatusPage,
     empty_action: gtk4::Button,
-    busy_count: Rc<Cell<u32>>,
-    search_text: Rc<RefCell<String>>,
-    all_networks: Rc<RefCell<Vec<WifiNetwork>>>,
-    saved_ssids: Rc<RefCell<HashSet<String>>>,
-    filter_state: Rc<RefCell<WifiFilter>>,
     filter_all: gtk4::ToggleButton,
     filter_24: gtk4::ToggleButton,
     filter_5: gtk4::ToggleButton,
     filter_saved: gtk4::ToggleButton,
-    connected_network: Rc<RefCell<Option<WifiNetwork>>>,
-    prefs: Rc<RefCell<AppPrefs>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WifiFilter {
-    All,
-    Band24,
-    Band5,
-    Saved,
+    app_state: AppState,
 }
 
 impl WifiPage {
-    pub fn new(prefs: Rc<RefCell<AppPrefs>>) -> Self {
+    pub fn new(app_state: AppState) -> Self {
         let widget = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         let toast_overlay = adw::ToastOverlay::new();
 
@@ -69,17 +60,19 @@ impl WifiPage {
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vexpand(true)
             .build();
+        let clamp = adw::Clamp::builder()
+            .maximum_size(920)
+            .tightening_threshold(560)
+            .build();
 
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        content.set_margin_top(12);
-        content.set_margin_bottom(12);
-        content.set_margin_start(12);
-        content.set_margin_end(12);
+        content.set_margin_top(16);
+        content.set_margin_bottom(16);
+        content.set_margin_start(16);
+        content.set_margin_end(16);
 
         // WiFi Toggle
-        let wifi_switch = adw::SwitchRow::builder()
-            .title("Use Wi-Fi")
-            .build();
+        let wifi_switch = adw::SwitchRow::builder().title("Use Wi-Fi").build();
 
         let switch_group = adw::PreferencesGroup::new();
         switch_group.add(&wifi_switch);
@@ -137,6 +130,19 @@ impl WifiPage {
 
         let spinner = gtk4::Spinner::new();
         spinner.add_css_class("big-spinner");
+        spinner.set_size_request(28, 28);
+        spinner.set_visible(false);
+
+        let operation_status_label = gtk4::Label::new(None);
+        operation_status_label.set_halign(gtk4::Align::Start);
+        operation_status_label.set_opacity(0.7);
+        operation_status_label.set_visible(false);
+
+        let hidden_network_button = gtk4::Button::builder()
+            .label("Hidden Network")
+            .tooltip_text("Connect to a hidden Wi-Fi network")
+            .css_classes(vec!["flat".to_string(), "touch-target".to_string()])
+            .build();
 
         let refresh_button = gtk4::Button::builder()
             .icon_name(icon_name(
@@ -153,8 +159,10 @@ impl WifiPage {
 
         header_box.append(&networks_label);
         header_box.append(&spinner);
+        header_box.append(&hidden_network_button);
         header_box.append(&refresh_button);
         content.append(&header_box);
+        content.append(&operation_status_label);
 
         // Connected network card
         let connected_card = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -187,7 +195,7 @@ impl WifiPage {
 
         let details_revealer = gtk4::Revealer::new();
         details_revealer.set_transition_type(gtk4::RevealerTransitionType::Crossfade);
-        let expand_connected_details = prefs.borrow().expand_connected_details;
+        let expand_connected_details = app_state.expand_connected_details();
         details_revealer.set_reveal_child(expand_connected_details);
 
         let details_clamp = adw::Clamp::builder()
@@ -249,7 +257,10 @@ impl WifiPage {
         let empty_state = adw::StatusPage::builder()
             .icon_name(icon_name(
                 "network-wireless-disabled-symbolic",
-                &["network-wireless-symbolic", "network-wireless-offline-symbolic"][..],
+                &[
+                    "network-wireless-symbolic",
+                    "network-wireless-offline-symbolic",
+                ][..],
             ))
             .title("No Networks Found")
             .description("Turn on Wi-Fi or refresh to scan for networks")
@@ -269,24 +280,20 @@ impl WifiPage {
         content.append(&empty_state);
         content.append(&empty_action);
 
-        scrolled.set_child(Some(&content));
+        clamp.set_child(Some(&content));
+        scrolled.set_child(Some(&clamp));
         toast_overlay.set_child(Some(&scrolled));
         widget.append(&toast_overlay);
-
-        let search_text = Rc::new(RefCell::new(String::new()));
-        let all_networks = Rc::new(RefCell::new(Vec::new()));
-        let saved_ssids = Rc::new(RefCell::new(HashSet::new()));
-        let filter_state = Rc::new(RefCell::new(WifiFilter::All));
-        let connected_network = Rc::new(RefCell::new(None));
-        let busy_count = Rc::new(Cell::new(0));
 
         let page = Self {
             widget,
             toast_overlay,
             wifi_switch: wifi_switch.clone(),
             search_entry: search_entry.clone(),
+            hidden_network_button: hidden_network_button.clone(),
             refresh_button: refresh_button.clone(),
             spinner: spinner.clone(),
+            operation_status_label: operation_status_label.clone(),
             connected_card: connected_card.clone(),
             connected_ssid: connected_ssid.clone(),
             connected_subtitle: connected_subtitle.clone(),
@@ -300,25 +307,19 @@ impl WifiPage {
             other_list: other_list.clone(),
             empty_state: empty_state.clone(),
             empty_action: empty_action.clone(),
-            search_text,
-            all_networks,
-            saved_ssids,
-            filter_state,
             filter_all: filter_all.clone(),
             filter_24: filter_24.clone(),
             filter_5: filter_5.clone(),
             filter_saved: filter_saved.clone(),
-            connected_network,
-            busy_count,
-            prefs,
+            app_state: app_state.clone(),
         };
 
         page.apply_expand_details_setting(expand_connected_details);
 
         // Connected details toggle
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         details_button.connect_clicked(move |_| {
-            let page = page_ref.clone_ref();
+            let page = page_ref.clone();
             let reveal = !page.connected_details_revealer.reveals_child();
             page.connected_details_revealer.set_reveal_child(reveal);
             if reveal {
@@ -327,57 +328,65 @@ impl WifiPage {
         });
 
         // Context menu for connected card
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         let connected_card_widget = page.connected_card.clone().upcast::<gtk4::Widget>();
         let connected_card = page.connected_card.clone();
         let connected_menu_gesture = gtk4::GestureClick::new();
         connected_menu_gesture.set_button(3);
         connected_menu_gesture.connect_released(move |_gesture, _n_press, x, y| {
-            if let Some(network) = page_ref.connected_network.borrow().clone() {
+            if let Some(network) = page_ref.app_state.wifi_connected_network() {
                 page_ref.show_context_menu(&connected_card_widget, &network, x, y);
             }
         });
         connected_card.add_controller(connected_menu_gesture);
 
         // Filter buttons
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         filter_all.connect_toggled(move |btn| {
             if btn.is_active() {
-                *page_ref.filter_state.borrow_mut() = WifiFilter::All;
+                page_ref
+                    .app_state
+                    .set_wifi_filter_state(WifiFilterState::All);
                 page_ref.update_filtered_networks();
             }
         });
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         filter_24.connect_toggled(move |btn| {
             if btn.is_active() {
-                *page_ref.filter_state.borrow_mut() = WifiFilter::Band24;
+                page_ref
+                    .app_state
+                    .set_wifi_filter_state(WifiFilterState::Band24);
                 page_ref.update_filtered_networks();
             }
         });
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         filter_5.connect_toggled(move |btn| {
             if btn.is_active() {
-                *page_ref.filter_state.borrow_mut() = WifiFilter::Band5;
+                page_ref
+                    .app_state
+                    .set_wifi_filter_state(WifiFilterState::Band5);
                 page_ref.update_filtered_networks();
             }
         });
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         filter_saved.connect_toggled(move |btn| {
             if btn.is_active() {
-                *page_ref.filter_state.borrow_mut() = WifiFilter::Saved;
+                page_ref
+                    .app_state
+                    .set_wifi_filter_state(WifiFilterState::Saved);
                 page_ref.update_filtered_networks();
             }
         });
 
         // Check initial WiFi state
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         glib::spawn_future_local(async move {
             match nm::is_wifi_enabled().await {
                 Ok(enabled) => {
                     page_ref.wifi_switch.set_active(enabled);
                     page_ref.update_filter_controls(enabled);
                     if enabled {
-                        page_ref.refresh_networks().await;
+                        page_ref.refresh_networks(false).await;
                     } else {
                         page_ref.load_saved_connections().await;
                         page_ref.update_filtered_networks();
@@ -390,20 +399,23 @@ impl WifiPage {
         });
 
         // WiFi switch handler
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         wifi_switch.connect_active_notify(move |switch| {
             let enabled = switch.is_active();
-            let page = page_ref.clone_ref();
+            let page = page_ref.clone();
 
             page.update_filter_controls(enabled);
-            
+            if enabled && page.filter_saved.is_active() {
+                page.filter_all.set_active(true);
+            }
+
             glib::spawn_future_local(async move {
                 match nm::set_wifi_enabled(enabled).await {
                     Ok(_) => {
                         if enabled {
-                            page.refresh_networks().await;
+                            page.refresh_networks(false).await;
                         } else {
-                            page.all_networks.borrow_mut().clear();
+                            page.app_state.clear_wifi_all_networks();
                             page.load_saved_connections().await;
                             page.update_filtered_networks();
                         }
@@ -417,102 +429,132 @@ impl WifiPage {
         });
 
         // Search handler
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         search_entry.connect_search_changed(move |entry| {
             let text = entry.text().to_string();
-            *page_ref.search_text.borrow_mut() = text.to_lowercase();
-            page_ref.update_filtered_networks();
+            page_ref.app_state.set_wifi_search_text(text.to_lowercase());
+            if let Some(source) = page_ref.app_state.take_wifi_search_debounce_source() {
+                source.remove();
+            }
+            let page = page_ref.clone();
+            let source =
+                glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                    page.update_filtered_networks();
+                    glib::ControlFlow::Break
+                });
+            page_ref
+                .app_state
+                .set_wifi_search_debounce_source(Some(source));
         });
 
         // Refresh button handler
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         refresh_button.connect_clicked(move |_| {
-            let page = page_ref.clone_ref();
+            let page = page_ref.clone();
             glib::spawn_future_local(async move {
-                page.refresh_networks().await;
+                page.refresh_networks(true).await;
             });
         });
 
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
+        hidden_network_button.connect_clicked(move |_| {
+            let page = page_ref.clone();
+            glib::spawn_future_local(async move {
+                page.show_hidden_network_dialog().await;
+            });
+        });
+
+        let page_ref = page.clone();
         empty_action.connect_clicked(move |_| {
-            let page = page_ref.clone_ref();
+            let page = page_ref.clone();
             page.wifi_switch.set_active(true);
         });
 
-        // Auto-refresh every 10 seconds
-        let page_ref = page.clone_ref();
-        glib::timeout_add_seconds_local(10, move || {
-            let page = page_ref.clone_ref();
-            if page.wifi_switch.is_active() && page.prefs.borrow().auto_scan {
+        page.set_page_visible(false);
+        page
+    }
+
+    pub fn set_page_visible(&self, visible: bool) {
+        self.app_state.set_page_visible(PageKind::Wifi, visible);
+        if visible {
+            self.start_auto_refresh();
+            let page = self.clone();
+            glib::spawn_future_local(async move {
+                page.refresh_networks(false).await;
+            });
+        } else {
+            self.stop_auto_refresh();
+        }
+    }
+
+    fn start_auto_refresh(&self) {
+        if self.app_state.wifi_has_refresh_source() {
+            return;
+        }
+
+        let page_ref = self.clone();
+        let source = glib::timeout_add_seconds_local(15, move || {
+            let page = page_ref.clone();
+            if page.wifi_switch.is_active()
+                && page.app_state.auto_scan_enabled()
+                && page.app_state.is_page_visible(PageKind::Wifi)
+            {
                 glib::spawn_future_local(async move {
-                    page.refresh_networks().await;
+                    page.refresh_networks(false).await;
                 });
             }
             glib::ControlFlow::Continue
         });
 
-        page
+        self.app_state.set_wifi_refresh_source(Some(source));
     }
 
-    pub fn clone_ref(&self) -> Self {
-        Self {
-            widget: self.widget.clone(),
-            toast_overlay: self.toast_overlay.clone(),
-            wifi_switch: self.wifi_switch.clone(),
-            search_entry: self.search_entry.clone(),
-            refresh_button: self.refresh_button.clone(),
-            spinner: self.spinner.clone(),
-            connected_card: self.connected_card.clone(),
-            connected_ssid: self.connected_ssid.clone(),
-            connected_subtitle: self.connected_subtitle.clone(),
-            connected_details_revealer: self.connected_details_revealer.clone(),
-            connected_details_ip: self.connected_details_ip.clone(),
-            connected_details_dns: self.connected_details_dns.clone(),
-            connected_details_speed: self.connected_details_speed.clone(),
-            known_header: self.known_header.clone(),
-            known_list: self.known_list.clone(),
-            other_header: self.other_header.clone(),
-            other_list: self.other_list.clone(),
-            empty_state: self.empty_state.clone(),
-            empty_action: self.empty_action.clone(),
-            search_text: self.search_text.clone(),
-            all_networks: self.all_networks.clone(),
-            saved_ssids: self.saved_ssids.clone(),
-            filter_state: self.filter_state.clone(),
-            filter_all: self.filter_all.clone(),
-            filter_24: self.filter_24.clone(),
-            filter_5: self.filter_5.clone(),
-            filter_saved: self.filter_saved.clone(),
-            connected_network: self.connected_network.clone(),
-            busy_count: self.busy_count.clone(),
-            prefs: self.prefs.clone(),
+    fn stop_auto_refresh(&self) {
+        if let Some(source) = self.app_state.take_wifi_refresh_source() {
+            source.remove();
         }
     }
 
-    fn set_busy(&self, busy: bool) {
-        let current = self.busy_count.get();
+    fn set_busy(&self, busy: bool, status_message: Option<&str>) {
         let next = if busy {
-            current.saturating_add(1)
+            self.app_state.wifi_busy_count_inc()
         } else {
-            current.saturating_sub(1)
+            self.app_state.wifi_busy_count_dec()
         };
-        self.busy_count.set(next);
-        if next > 0 {
-            self.spinner.set_visible(true);
-            self.spinner.start();
-            self.refresh_button.set_sensitive(false);
-        } else {
-            self.spinner.stop();
-            self.spinner.set_visible(false);
-            self.refresh_button.set_sensitive(true);
+        if busy {
+            if next == 1 {
+                common::set_busy(
+                    &self.spinner,
+                    &self.operation_status_label,
+                    Some(&self.refresh_button),
+                    true,
+                    status_message,
+                );
+                self.hidden_network_button.set_sensitive(false);
+            } else if let Some(message) = status_message {
+                self.operation_status_label.set_text(message);
+            }
+            return;
+        }
+
+        if next == 0 {
+            common::set_busy(
+                &self.spinner,
+                &self.operation_status_label,
+                Some(&self.refresh_button),
+                false,
+                None,
+            );
+            self.refresh_button
+                .set_sensitive(self.wifi_switch.is_active());
+            self.hidden_network_button
+                .set_sensitive(self.wifi_switch.is_active());
         }
     }
 
-    fn busy_guard(&self) -> BusyGuard {
-        self.set_busy(true);
-        BusyGuard {
-            page: self.clone_ref(),
-        }
+    fn busy_guard(&self, status_message: &'static str) -> BusyGuard {
+        self.set_busy(true, Some(status_message));
+        BusyGuard { page: self.clone() }
     }
 
     fn update_filter_controls(&self, wifi_enabled: bool) {
@@ -521,6 +563,7 @@ impl WifiPage {
         self.filter_24.set_sensitive(wifi_enabled);
         self.filter_5.set_sensitive(wifi_enabled);
         self.filter_saved.set_sensitive(true);
+        self.hidden_network_button.set_sensitive(wifi_enabled);
 
         if !wifi_enabled {
             self.filter_saved.set_active(true);
@@ -528,48 +571,142 @@ impl WifiPage {
     }
 
     fn is_band_24(network: &WifiNetwork) -> bool {
-        if (2400..=2500).contains(&network.freq_mhz) {
+        let freq_mhz = if network.freq_mhz >= 1_000_000_000 {
+            network.freq_mhz / 1_000_000
+        } else if network.freq_mhz >= 1_000_000 {
+            network.freq_mhz / 1_000
+        } else {
+            network.freq_mhz
+        };
+
+        if (2400..=2500).contains(&freq_mhz) {
             return true;
         }
         if (1..=14).contains(&network.channel) {
             return true;
         }
-        let band = network.band.to_lowercase().replace(' ', "");
+        let band = network
+            .band
+            .to_lowercase()
+            .replace(' ', "")
+            .replace(',', ".");
         band.contains("2.4") || band.contains("2g")
     }
 
     fn is_band_5(network: &WifiNetwork) -> bool {
-        if (4900..5925).contains(&network.freq_mhz) {
+        let freq_mhz = if network.freq_mhz >= 1_000_000_000 {
+            network.freq_mhz / 1_000_000
+        } else if network.freq_mhz >= 1_000_000 {
+            network.freq_mhz / 1_000
+        } else {
+            network.freq_mhz
+        };
+
+        if (4900..5925).contains(&freq_mhz) {
             return true;
         }
         if (36..=177).contains(&network.channel) {
             return true;
         }
-        let band = network.band.to_lowercase().replace(' ', "");
+        let band = network
+            .band
+            .to_lowercase()
+            .replace(' ', "")
+            .replace(',', ".");
         band.contains("5") && !band.contains("2.4") && !band.contains("6")
     }
 
-    async fn refresh_networks(&self) {
-        let _busy = self.busy_guard();
-        self.known_list.add_css_class("list-loading");
-        self.other_list.add_css_class("list-loading");
+    fn sort_networks_stably(networks: &mut [WifiNetwork]) {
+        networks.sort_by(Self::compare_network_rows);
+    }
+
+    fn compare_network_rows(a: &WifiNetwork, b: &WifiNetwork) -> Ordering {
+        let ssid_cmp = a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase());
+        if ssid_cmp != Ordering::Equal {
+            return ssid_cmp;
+        }
+
+        let band_cmp =
+            Self::network_band_sort_key(&a.band).cmp(&Self::network_band_sort_key(&b.band));
+        if band_cmp != Ordering::Equal {
+            return band_cmp;
+        }
+
+        let security_cmp = Self::network_security_sort_key(&a.security_type)
+            .cmp(&Self::network_security_sort_key(&b.security_type));
+        if security_cmp != Ordering::Equal {
+            return security_cmp;
+        }
+
+        b.signal
+            .cmp(&a.signal)
+            .then_with(|| a.channel.cmp(&b.channel))
+            .then_with(|| a.band.cmp(&b.band))
+            .then_with(|| a.security_type.cmp(&b.security_type))
+    }
+
+    fn network_band_sort_key(band: &str) -> u8 {
+        let normalized = band.to_lowercase();
+        if normalized == "saved" {
+            0
+        } else if normalized.contains("2.4") {
+            1
+        } else if normalized.contains("5")
+            && !normalized.contains("2.4")
+            && !normalized.contains("6")
+        {
+            2
+        } else if normalized.contains('6') {
+            3
+        } else {
+            4
+        }
+    }
+
+    fn network_security_sort_key(security: &str) -> u8 {
+        let normalized = security.to_lowercase();
+        if normalized == "saved" {
+            0
+        } else if normalized.contains("open") {
+            1
+        } else if normalized.contains("wep") {
+            2
+        } else if normalized.contains("wpa") {
+            3
+        } else {
+            4
+        }
+    }
+
+    async fn refresh_networks(&self, show_feedback: bool) {
+        let _busy = self.busy_guard("Refreshing...");
+        if show_feedback {
+            self.known_list.add_css_class("list-loading");
+            self.other_list.add_css_class("list-loading");
+        }
 
         self.load_saved_connections().await;
 
         match nm::scan_networks().await {
             Ok(networks) => {
-                *self.all_networks.borrow_mut() = networks;
+                self.app_state.set_wifi_all_networks(networks);
                 self.update_filtered_networks();
             }
             Err(e) => {
                 log::error!("Failed to scan networks: {}", e);
-                self.show_toast(&format!("Failed to scan: {}", e));
+                if nm::is_nmcli_retrieval_error(&e.to_string()) {
+                    self.show_toast(nm::NMCLI_RETRIEVAL_TOAST);
+                } else {
+                    self.show_toast(&format!("Failed to scan: {}", e));
+                }
                 self.update_filtered_networks();
             }
         }
 
-        self.known_list.remove_css_class("list-loading");
-        self.other_list.remove_css_class("list-loading");
+        if show_feedback {
+            self.known_list.remove_css_class("list-loading");
+            self.other_list.remove_css_class("list-loading");
+        }
     }
 
     async fn load_saved_connections(&self) {
@@ -579,25 +716,25 @@ impl WifiPage {
                 for conn in saved {
                     set.insert(conn.ssid);
                 }
-                *self.saved_ssids.borrow_mut() = set;
+                self.app_state.set_wifi_saved_ssids(set);
             }
             Err(e) => {
                 log::warn!("Failed to load saved networks: {}", e);
-                self.saved_ssids.borrow_mut().clear();
+                self.app_state.clear_wifi_saved_ssids();
             }
         }
     }
 
     fn update_filtered_networks(&self) {
-        let all_nets = self.all_networks.borrow();
-        let search = self.search_text.borrow();
-        let saved = self.saved_ssids.borrow();
-        let filter_state = *self.filter_state.borrow();
+        let all_nets = self.app_state.wifi_all_networks();
+        let search = self.app_state.wifi_search_text();
+        let saved = self.app_state.wifi_saved_ssids();
+        let filter_state = self.app_state.wifi_filter_state();
         let wifi_enabled = self.wifi_switch.is_active();
         let connected = all_nets.iter().find(|n| n.connected).cloned();
 
         let filtered: Vec<WifiNetwork> = match filter_state {
-            WifiFilter::Saved => {
+            WifiFilterState::Saved => {
                 let mut list = Vec::new();
                 let mut seen_saved: HashSet<String> = HashSet::new();
 
@@ -605,7 +742,7 @@ impl WifiPage {
                     let search_match = if search.is_empty() {
                         true
                     } else {
-                        net.ssid.to_lowercase().contains(&*search)
+                        net.ssid.to_lowercase().contains(&search)
                     };
                     if search_match {
                         list.push(net.clone());
@@ -613,20 +750,23 @@ impl WifiPage {
                     seen_saved.insert(net.ssid.clone());
                 }
 
-                for ssid in saved.iter() {
-                    if seen_saved.contains(ssid) {
+                let mut missing_saved: Vec<String> = saved.iter().cloned().collect();
+                missing_saved.sort_by_key(|ssid| ssid.to_lowercase());
+
+                for ssid in missing_saved {
+                    if seen_saved.contains(&ssid) {
                         continue;
                     }
                     let search_match = if search.is_empty() {
                         true
                     } else {
-                        ssid.to_lowercase().contains(&*search)
+                        ssid.to_lowercase().contains(&search)
                     };
                     if !search_match {
                         continue;
                     }
                     list.push(WifiNetwork {
-                        ssid: ssid.to_string(),
+                        ssid,
                         signal: 0,
                         secured: true,
                         connected: false,
@@ -637,6 +777,7 @@ impl WifiPage {
                     });
                 }
 
+                Self::sort_networks_stably(&mut list);
                 list
             }
             _ => {
@@ -650,14 +791,14 @@ impl WifiPage {
                             let search_match = if search.is_empty() {
                                 true
                             } else {
-                                net.ssid.to_lowercase().contains(&*search)
+                                net.ssid.to_lowercase().contains(&search)
                             };
 
                             let filter_match = match filter_state {
-                                WifiFilter::All => true,
-                                WifiFilter::Band24 => Self::is_band_24(net),
-                                WifiFilter::Band5 => Self::is_band_5(net),
-                                WifiFilter::Saved => saved.contains(&net.ssid),
+                                WifiFilterState::All => true,
+                                WifiFilterState::Band24 => Self::is_band_24(net),
+                                WifiFilterState::Band5 => Self::is_band_5(net),
+                                WifiFilterState::Saved => saved.contains(&net.ssid),
                             };
 
                             search_match && filter_match
@@ -675,7 +816,8 @@ impl WifiPage {
         self.clear_networks();
 
         if let Some(ref network) = connected {
-            *self.connected_network.borrow_mut() = Some(network.clone());
+            self.app_state
+                .set_wifi_connected_network(Some(network.clone()));
             self.update_connected_card(network);
             self.connected_card.set_visible(true);
             self.connected_card.add_css_class("fade-in");
@@ -687,14 +829,19 @@ impl WifiPage {
         self.empty_state.set_visible(false);
         self.empty_action.set_visible(false);
 
-        let saved = self.saved_ssids.borrow();
+        let saved = self.app_state.wifi_saved_ssids();
         let mut known = Vec::new();
         let mut other = Vec::new();
 
         for network in networks {
             if connected
                 .as_ref()
-                .map(|c| c.connected && c.ssid == network.ssid)
+                .map(|c| {
+                    c.connected
+                        && c.ssid == network.ssid
+                        && c.band == network.band
+                        && c.security_type == network.security_type
+                })
                 .unwrap_or(false)
             {
                 continue;
@@ -706,6 +853,9 @@ impl WifiPage {
                 other.push(network);
             }
         }
+
+        Self::sort_networks_stably(&mut known);
+        Self::sort_networks_stably(&mut other);
 
         for network in known {
             let row = self.create_network_row(&network);
@@ -750,13 +900,13 @@ impl WifiPage {
             signal_text, network.band, network.channel
         );
         self.connected_subtitle.set_text(&subtitle);
-        if self.prefs.borrow().expand_connected_details {
+        if self.app_state.expand_connected_details() {
             self.apply_expand_details_setting(true);
         }
     }
 
     fn refresh_connected_details(&self) {
-        let network = self.connected_network.borrow().clone();
+        let network = self.app_state.wifi_connected_network();
         let details_ip = self.connected_details_ip.clone();
         let details_dns = self.connected_details_dns.clone();
         let details_speed = self.connected_details_speed.clone();
@@ -869,13 +1019,13 @@ impl WifiPage {
         self.add_context_menu(&row.clone().upcast::<gtk4::Widget>(), network);
 
         // Click handler
-        let page = self.clone_ref();
+        let page = self.clone();
         let network = network.clone();
         row.set_activatable(true);
         row.connect_activated(move |_| {
-            let page = page.clone_ref();
+            let page = page.clone();
             let network = network.clone();
-            
+
             glib::spawn_future_local(async move {
                 if network.connected {
                     page.show_network_info_dialog(&network).await;
@@ -893,7 +1043,7 @@ impl WifiPage {
         gesture.set_button(3); // Right click
 
         let network_for_menu = network.clone();
-        let page_for_menu = self.clone_ref();
+        let page_for_menu = self.clone();
         let widget_for_menu = widget.clone();
 
         gesture.connect_released(move |_gesture, _n_press, x, y| {
@@ -907,12 +1057,7 @@ impl WifiPage {
         let popover = gtk4::Popover::new();
         popover.set_position(gtk4::PositionType::Bottom);
         popover.set_has_arrow(false);
-        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
-            x as i32,
-            y as i32,
-            1,
-            1,
-        )));
+        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
 
         let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         menu_box.add_css_class("menu");
@@ -926,11 +1071,11 @@ impl WifiPage {
                 .css_classes(vec!["flat".to_string()])
                 .build();
 
-            let page_disc = self.clone_ref();
+            let page_disc = self.clone();
             let popover_disc = popover.clone();
 
             disconnect_btn.connect_clicked(move |_| {
-                let page = page_disc.clone_ref();
+                let page = page_disc.clone();
                 popover_disc.popdown();
 
                 glib::spawn_future_local(async move {
@@ -946,12 +1091,12 @@ impl WifiPage {
                 .css_classes(vec!["flat".to_string()])
                 .build();
 
-            let page_conn = self.clone_ref();
+            let page_conn = self.clone();
             let network_conn = network.clone();
             let popover_conn = popover.clone();
 
             connect_btn.connect_clicked(move |_| {
-                let page = page_conn.clone_ref();
+                let page = page_conn.clone();
                 let network = network_conn.clone();
                 popover_conn.popdown();
 
@@ -970,12 +1115,12 @@ impl WifiPage {
             .build();
         qr_btn.set_visible(false);
 
-        let page_qr = self.clone_ref();
+        let page_qr = self.clone();
         let network_qr = network.clone();
         let popover_qr = popover.clone();
 
         qr_btn.connect_clicked(move |_| {
-            let page = page_qr.clone_ref();
+            let page = page_qr.clone();
             let network = network_qr.clone();
             popover_qr.popdown();
 
@@ -987,8 +1132,8 @@ impl WifiPage {
         let qr_btn_state = qr_btn.clone();
         let ssid_check = network.ssid.clone();
         glib::spawn_future_local(async move {
-            let has_password = nm::get_saved_password_for_ssid(&ssid_check).await.is_ok();
-            if has_password {
+            let is_saved = nm::is_network_saved(&ssid_check).await.unwrap_or(false);
+            if is_saved {
                 qr_btn_state.set_visible(true);
             }
         });
@@ -1001,12 +1146,12 @@ impl WifiPage {
             .css_classes(vec!["flat".to_string()])
             .build();
 
-        let page_info = self.clone_ref();
+        let page_info = self.clone();
         let network_info = network.clone();
         let popover_info = popover.clone();
 
         info_btn.connect_clicked(move |_| {
-            let page = page_info.clone_ref();
+            let page = page_info.clone();
             let network = network_info.clone();
             popover_info.popdown();
 
@@ -1037,12 +1182,12 @@ impl WifiPage {
         forget_content.append(&forget_label);
         forget_btn.set_child(Some(&forget_content));
 
-        let page_forget = self.clone_ref();
+        let page_forget = self.clone();
         let ssid_forget = network.ssid.clone();
         let popover_forget = popover.clone();
 
         forget_btn.connect_clicked(move |_| {
-            let page = page_forget.clone_ref();
+            let page = page_forget.clone();
             let ssid = ssid_forget.clone();
             popover_forget.popdown();
 
@@ -1054,8 +1199,8 @@ impl WifiPage {
         let forget_btn_state = forget_btn.clone();
         let ssid_check = network.ssid.clone();
         glib::spawn_future_local(async move {
-            let has_password = nm::get_saved_password_for_ssid(&ssid_check).await.is_ok();
-            if has_password {
+            let is_saved = nm::is_network_saved(&ssid_check).await.unwrap_or(false);
+            if is_saved {
                 forget_btn_state.set_visible(true);
                 forget_btn_state.set_sensitive(true);
             }
@@ -1093,6 +1238,100 @@ impl WifiPage {
 
     async fn show_password_dialog(&self, network: &WifiNetwork) {
         self.show_password_dialog_for_ssid(&network.ssid, Some(&network.security_type))
+            .await;
+    }
+
+    async fn show_hidden_network_dialog(&self) {
+        let ssid_entry = adw::EntryRow::builder()
+            .title("Network Name (SSID)")
+            .activates_default(true)
+            .build();
+
+        let security_model =
+            gtk4::StringList::new(&["WPA/WPA2 Personal", "WPA3 Personal", "WEP", "Open"][..]);
+        let security_row = adw::ComboRow::builder()
+            .title("Security")
+            .model(&security_model)
+            .selected(0)
+            .build();
+
+        let password_entry = adw::PasswordEntryRow::builder()
+            .title("Password")
+            .activates_default(true)
+            .build();
+
+        let helper_label = gtk4::Label::new(Some(
+            "Enter the exact hidden SSID and matching security settings",
+        ));
+        helper_label.set_wrap(true);
+        helper_label.set_xalign(0.0);
+        helper_label.add_css_class("dim-label");
+
+        let content_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+        content_box.set_margin_top(12);
+        content_box.set_margin_bottom(12);
+        content_box.set_margin_start(12);
+        content_box.set_margin_end(12);
+        content_box.append(&helper_label);
+        content_box.append(&ssid_entry);
+        content_box.append(&security_row);
+        content_box.append(&password_entry);
+
+        let password_entry_visibility = password_entry.clone();
+        security_row.connect_selected_notify(move |row| {
+            let password_required = row.selected() != 3;
+            password_entry_visibility.set_visible(password_required);
+            if !password_required {
+                password_entry_visibility.set_text("");
+            }
+        });
+
+        let dialog = adw::AlertDialog::builder()
+            .heading("Connect to Hidden Network")
+            .body("Hidden networks do not appear in the scan list until you connect")
+            .extra_child(&content_box)
+            .default_response("connect")
+            .close_response("cancel")
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("connect", "Connect")][..]);
+        dialog.set_response_appearance("connect", adw::ResponseAppearance::Suggested);
+
+        let response = if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
+            dialog.choose_future(Some(parent)).await
+        } else {
+            dialog.choose_future(None::<&gtk4::Window>).await
+        };
+
+        if response.as_str() != "connect" {
+            return;
+        }
+
+        let ssid = ssid_entry.text().to_string();
+        if ssid.trim().is_empty() {
+            self.show_toast("Please enter the hidden network name");
+            return;
+        }
+
+        let security_type = match security_row.selected() {
+            1 => Some("WPA3"),
+            2 => Some("WEP"),
+            3 => None,
+            _ => Some("WPA/WPA2"),
+        };
+
+        let password_text = password_entry.text().to_string();
+        if security_type.is_some() && password_text.is_empty() {
+            self.show_toast("Please enter the network password");
+            return;
+        }
+
+        let password = if password_text.is_empty() {
+            None
+        } else {
+            Some(password_text.as_str())
+        };
+
+        self.connect_hidden_network(&ssid, password, security_type)
             .await;
     }
 
@@ -1135,21 +1374,18 @@ impl WifiPage {
             return;
         }
 
-        self.connect_secured_network(ssid, &password, security_type).await;
+        self.connect_secured_network(ssid, &password, security_type)
+            .await;
     }
 
     async fn connect_open_network(&self, ssid: &str) {
-        let _busy = self.busy_guard();
+        let _busy = self.busy_guard("Connecting...");
         self.show_toast("Connecting...");
-        
+
         match nm::connect_open_network(ssid).await {
             Ok(nm::ConnectStatus::Connected) => {
                 self.show_toast(&format!("Connected to {}", ssid));
-                self.refresh_networks().await;
-            }
-            Ok(nm::ConnectStatus::Queued) => {
-                self.show_toast("Connection queued...");
-                self.refresh_networks().await;
+                self.refresh_networks(false).await;
             }
             Err(e) => {
                 log::error!("Connection failed: {}", e);
@@ -1164,17 +1400,13 @@ impl WifiPage {
         password: &str,
         security_type: Option<&str>,
     ) {
-        let _busy = self.busy_guard();
+        let _busy = self.busy_guard("Connecting...");
         self.show_toast("Connecting...");
-        
+
         match nm::connect_secured_network(ssid, password, security_type).await {
             Ok(nm::ConnectStatus::Connected) => {
                 self.show_toast(&format!("Connected to {}", ssid));
-                self.refresh_networks().await;
-            }
-            Ok(nm::ConnectStatus::Queued) => {
-                self.show_toast("Connection queued...");
-                self.refresh_networks().await;
+                self.refresh_networks(false).await;
             }
             Err(e) => {
                 log::error!("Connection failed: {}", e);
@@ -1183,61 +1415,51 @@ impl WifiPage {
         }
     }
 
-    async fn connect_saved_network(&self, ssid: &str) {
-        self.show_toast("Connecting...");
+    async fn connect_hidden_network(
+        &self,
+        ssid: &str,
+        password: Option<&str>,
+        security_type: Option<&str>,
+    ) {
+        let _busy = self.busy_guard("Connecting...");
+        self.show_toast("Connecting to hidden network...");
 
-        let activation_result = {
-            let _busy = self.busy_guard();
-            nm::activate_saved_connection(ssid).await
-        };
+        match nm::connect_hidden_network(ssid, password, security_type).await {
+            Ok(nm::ConnectStatus::Connected) => {
+                self.show_toast(&format!("Connected to {}", ssid));
+                self.refresh_networks(false).await;
+            }
+            Err(e) => {
+                log::error!("Hidden network connection failed: {}", e);
+                self.show_toast(&format!("Failed to connect: {}", e));
+            }
+        }
+    }
+
+    async fn connect_saved_network(&self, ssid: &str) {
+        let _busy = self.busy_guard("Connecting...");
+        self.show_toast("Connecting...");
+        let activation_result = nm::activate_saved_connection(ssid).await;
         match activation_result {
             Ok(nm::ConnectStatus::Connected) => {
                 self.show_toast(&format!("Connected to {}", ssid));
-                self.refresh_networks().await;
-            }
-            Ok(nm::ConnectStatus::Queued) => {
-                self.show_toast("Connection queued...");
-                self.refresh_networks().await;
+                self.refresh_networks(false).await;
             }
             Err(e) => {
                 let err_text = e.to_string();
                 if nm::is_network_not_found_error(&err_text) {
-                    // Fallback: try direct connect using saved password (if available)
+                    // Fallback: ask for password explicitly (saved secret reads are disabled).
                     let security_type = self
-                        .all_networks
-                        .borrow()
+                        .app_state
+                        .wifi_all_networks()
                         .iter()
                         .find(|n| n.ssid == ssid)
                         .map(|n| n.security_type.clone());
                     let security_type = security_type.filter(|s| s != "Saved");
-                    if let Ok(password) = nm::get_saved_password_for_ssid(ssid).await {
-                        match nm::connect_secured_network(
-                            ssid,
-                            &password,
-                            security_type.as_deref(),
-                        )
-                        .await
-                        {
-                            Ok(nm::ConnectStatus::Connected) => {
-                                self.show_toast(&format!("Connected to {}", ssid));
-                                self.refresh_networks().await;
-                            }
-                            Ok(nm::ConnectStatus::Queued) => {
-                                self.show_toast("Connection queued...");
-                                self.refresh_networks().await;
-                            }
-                            Err(e) => {
-                                log::error!("Connection failed: {}", e);
-                                self.show_toast(&format!("Failed to connect: {}", e));
-                            }
-                        }
-                        return;
-                    } else {
-                        self.show_toast("Password required to connect");
-                        self.show_password_dialog_for_ssid(ssid, security_type.as_deref())
-                            .await;
-                        return;
-                    }
+                    self.show_toast("Password required to connect");
+                    self.show_password_dialog_for_ssid(ssid, security_type.as_deref())
+                        .await;
+                    return;
                 }
 
                 log::error!("Connection failed: {}", e);
@@ -1247,18 +1469,19 @@ impl WifiPage {
     }
 
     async fn disconnect_network(&self) {
+        let _busy = self.busy_guard("Disconnecting...");
         // Get current connection
-        let networks = self.all_networks.borrow();
+        let networks = self.app_state.wifi_all_networks();
         let connected = networks.iter().find(|n| n.connected);
-        
+
         if let Some(network) = connected {
             let ssid = network.ssid.clone();
             drop(networks); // Release borrow
-            
+
             match nm::disconnect_network(&ssid).await {
                 Ok(_) => {
                     self.show_toast("Disconnected");
-                    self.refresh_networks().await;
+                    self.refresh_networks(false).await;
                 }
                 Err(e) => {
                     log::error!("Disconnect failed: {}", e);
@@ -1291,7 +1514,7 @@ impl WifiPage {
         match nm::delete_connection_by_ssid(ssid).await {
             Ok(_) => {
                 self.show_toast(&format!("Removed {}", ssid));
-                self.refresh_networks().await;
+                self.refresh_networks(false).await;
             }
             Err(e) => {
                 log::error!("Failed to forget network: {}", e);
@@ -1301,42 +1524,30 @@ impl WifiPage {
     }
 
     async fn show_qr_code(&self, network: &WifiNetwork) {
-        // Try to get the password
-        match self.get_network_password(&network.ssid).await {
-            Ok(password) => {
-                qr_dialog::show_qr_dialog(
-                    &network.ssid,
-                    &password,
-                    Some(network.security_type.as_str()),
-                    300,
-                    &self.toast_overlay,
-                )
-                .await;
+        let password = if network.secured {
+            match self.prompt_qr_password(&network.ssid).await {
+                Some(password) => password,
+                None => return,
             }
-            Err(e) => {
-                log::warn!("Failed to get password: {}", e);
-                if let Some(password) = self.prompt_qr_password(&network.ssid).await {
-                    qr_dialog::show_qr_dialog(
-                        &network.ssid,
-                        &password,
-                        Some(network.security_type.as_str()),
-                        300,
-                        &self.toast_overlay,
-                    )
-                    .await;
-                }
-            }
-        }
-    }
+        } else {
+            String::new()
+        };
 
-    async fn get_network_password(&self, _ssid: &str) -> Result<String, String> {
-        match nm::get_saved_password_for_ssid(_ssid).await {
-            Ok(password) => Ok(password),
-            Err(e) => Err(e.to_string()),
-        }
+        qr_dialog::show_qr_dialog(
+            &network.ssid,
+            &password,
+            Some(network.security_type.as_str()),
+            300,
+            &self.toast_overlay,
+        )
+        .await;
     }
 
     async fn prompt_qr_password(&self, ssid: &str) -> Option<String> {
+        if !nm::is_network_saved(ssid).await.unwrap_or(false) {
+            self.show_toast("Save and connect to the network before generating a QR code");
+            return None;
+        }
         let password_entry = adw::PasswordEntryRow::builder()
             .title("Password")
             .activates_default(true)
@@ -1386,6 +1597,12 @@ impl WifiPage {
             .content_width(520)
             .content_height(700)
             .build();
+        let parent_window = self
+            .widget
+            .root()
+            .and_then(|root| root.downcast::<gtk4::Window>().ok());
+        // * Make the network details dialog resize with the main window.
+        common::make_dialog_responsive(&dialog, parent_window.as_ref(), 520, 700);
 
         let main_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
@@ -1436,7 +1653,11 @@ impl WifiPage {
         let ssid_label = gtk4::Label::new(Some(&network.ssid));
         ssid_label.add_css_class("title-2");
 
-        let status_text = if network.connected { "Connected" } else { "Not connected" };
+        let status_text = if network.connected {
+            "Connected"
+        } else {
+            "Not connected"
+        };
         let status_label = gtk4::Label::new(Some(status_text));
         status_label.set_opacity(0.7);
 
@@ -1485,10 +1706,10 @@ impl WifiPage {
                 &["action-pill", "forget"][..],
             );
 
-            let page_forget = self.clone_ref();
+            let page_forget = self.clone();
             let ssid_forget = network.ssid.clone();
             forget_button.connect_clicked(move |_| {
-                let page = page_forget.clone_ref();
+                let page = page_forget.clone();
                 let ssid = ssid_forget.clone();
                 glib::spawn_future_local(async move {
                     page.forget_network(&ssid).await;
@@ -1506,9 +1727,9 @@ impl WifiPage {
                 &["action-pill", "disconnect"][..],
             );
 
-            let page_disc = self.clone_ref();
+            let page_disc = self.clone();
             disconnect_button.connect_clicked(move |_| {
-                let page = page_disc.clone_ref();
+                let page = page_disc.clone();
                 glib::spawn_future_local(async move {
                     page.disconnect_network().await;
                 });
@@ -1523,9 +1744,7 @@ impl WifiPage {
 
         // Auto-connect (only for saved networks)
         if is_saved {
-            let auto_group = adw::PreferencesGroup::builder()
-                .title("Connection")
-                .build();
+            let auto_group = adw::PreferencesGroup::builder().title("Connection").build();
 
             let auto_row = adw::SwitchRow::builder()
                 .title("Connect automatically")
@@ -1538,10 +1757,10 @@ impl WifiPage {
                 .unwrap_or(false);
             auto_row.set_active(current_auto);
 
-            let page_auto = self.clone_ref();
+            let page_auto = self.clone();
             let ssid_auto = network.ssid.clone();
             auto_row.connect_active_notify(move |row| {
-                let page = page_auto.clone_ref();
+                let page = page_auto.clone();
                 let ssid = ssid_auto.clone();
                 let enabled = row.is_active();
 
@@ -1558,13 +1777,9 @@ impl WifiPage {
         }
 
         // Custom DNS (active connection only)
-        let dns_group = adw::PreferencesGroup::builder()
-            .title("Custom DNS")
-            .build();
+        let dns_group = adw::PreferencesGroup::builder().title("Custom DNS").build();
 
-        let dns_entry = adw::EntryRow::builder()
-            .title("DNS servers")
-            .build();
+        let dns_entry = adw::EntryRow::builder().title("DNS servers").build();
 
         if let Some(i) = info.as_ref() {
             if !i.dns.is_empty() {
@@ -1572,9 +1787,7 @@ impl WifiPage {
             }
         }
 
-        let search_entry = adw::EntryRow::builder()
-            .title("Search domains")
-            .build();
+        let search_entry = adw::EntryRow::builder().title("Search domains").build();
 
         let apply_button = gtk4::Button::builder()
             .label("Apply")
@@ -1593,7 +1806,7 @@ impl WifiPage {
         apply_row.add_suffix(&apply_button);
         apply_row.set_activatable_widget(Some(&apply_button));
 
-        let page_apply = self.clone_ref();
+        let page_apply = self.clone();
         let ssid_apply = network.ssid.clone();
         let connected_apply = network.connected;
         let dns_entry_apply = dns_entry.clone();
@@ -1614,15 +1827,12 @@ impl WifiPage {
 
             let invalid = invalid_ip_entries(&dns_servers);
             if !invalid.is_empty() {
-                page_apply.show_toast(&format!(
-                    "Invalid DNS IP: {}",
-                    invalid.join(", ")
-                ));
+                page_apply.show_toast(&format!("Invalid DNS IP: {}", invalid.join(", ")));
                 return;
             }
 
             let search_domains = parse_entry_list(&search_text);
-            let page = page_apply.clone_ref();
+            let page = page_apply.clone();
             let ssid = ssid_apply.clone();
 
             glib::spawn_future_local(async move {
@@ -1652,10 +1862,7 @@ impl WifiPage {
                         page.show_toast("No active connection found");
                     }
                     Err(e) => {
-                        page.show_toast(&format!(
-                            "Failed to get active connection: {}",
-                            e
-                        ));
+                        page.show_toast(&format!("Failed to get active connection: {}", e));
                     }
                 }
             });
@@ -1669,27 +1876,28 @@ impl WifiPage {
         // Info items section
         let info_section = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
-        let mut items: Vec<(&'static str, String, String)> = Vec::new();
-        items.push((
-            get_signal_icon(network.signal),
-            "Signal strength".to_string(),
-            get_signal_strength_text(network.signal),
-        ));
-        items.push((
-            "network-wireless-symbolic",
-            "Frequency".to_string(),
-            network.band.clone(),
-        ));
-        items.push((
-            "network-wired-symbolic",
-            "Channel".to_string(),
-            network.channel.to_string(),
-        ));
-        items.push((
-            "security-high-symbolic",
-            "Security".to_string(),
-            network.security_type.clone(),
-        ));
+        let items: Vec<(&'static str, String, String)> = vec![
+            (
+                get_signal_icon(network.signal),
+                "Signal strength".to_string(),
+                get_signal_strength_text(network.signal),
+            ),
+            (
+                "network-wireless-symbolic",
+                "Frequency".to_string(),
+                network.band.clone(),
+            ),
+            (
+                "network-wired-symbolic",
+                "Channel".to_string(),
+                network.channel.to_string(),
+            ),
+            (
+                "security-high-symbolic",
+                "Security".to_string(),
+                network.security_type.clone(),
+            ),
+        ];
 
         let items_len = items.len();
         for (idx, (icon, title, subtitle)) in items.into_iter().enumerate() {
@@ -1824,7 +2032,7 @@ impl WifiPage {
         main_box.append(&scrolled);
         dialog.set_child(Some(&main_box));
 
-        if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
+        if let Some(parent) = parent_window.as_ref() {
             dialog.present(Some(parent));
         } else {
             dialog.present(None::<&gtk4::Window>);
@@ -1840,7 +2048,7 @@ impl WifiPage {
         }
 
         self.connected_card.set_visible(false);
-        self.connected_network.borrow_mut().take();
+        self.app_state.set_wifi_connected_network(None);
         self.known_header.set_visible(false);
         self.known_list.set_visible(false);
         self.other_header.set_visible(false);
@@ -1849,66 +2057,6 @@ impl WifiPage {
     }
 
     fn show_toast(&self, message: &str) {
-        let toast = adw::Toast::new(message);
-        self.toast_overlay.add_toast(toast);
+        common::show_toast(&self.toast_overlay, message);
     }
-}
-
-struct BusyGuard {
-    page: WifiPage,
-}
-
-impl Drop for BusyGuard {
-    fn drop(&mut self) {
-        self.page.set_busy(false);
-    }
-}
-
-fn get_signal_icon(signal: u8) -> &'static str {
-    if signal >= 75 {
-        "network-wireless-signal-excellent-symbolic"
-    } else if signal >= 50 {
-        "network-wireless-signal-good-symbolic"
-    } else if signal >= 25 {
-        "network-wireless-signal-ok-symbolic"
-    } else {
-        "network-wireless-signal-weak-symbolic"
-    }
-}
-
-fn get_signal_strength_text(signal: u8) -> String {
-    let quality = if signal >= 75 {
-        "Excellent"
-    } else if signal >= 50 {
-        "Good"
-    } else if signal >= 25 {
-        "Fair"
-    } else if signal >= 10 {
-        "Weak"
-    } else {
-        "Very weak"
-    };
-    format!("{} ({}%)", quality, signal)
-}
-
-fn parse_entry_list(input: &str) -> Vec<String> {
-    input
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter_map(|item| {
-            let trimmed = item.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-        .collect()
-}
-
-fn invalid_ip_entries(entries: &[String]) -> Vec<String> {
-    entries
-        .iter()
-        .filter(|entry| entry.parse::<IpAddr>().is_err())
-        .cloned()
-        .collect()
 }
