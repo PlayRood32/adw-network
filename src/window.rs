@@ -1,6 +1,6 @@
-// * Credits and inspirations:
-// * GNOME Settings Network panel for UI patterns.
-// * airctl for the clean visual direction.
+// File: window.rs
+// Location: /src/window.rs
+
 
 use gtk4::glib;
 use gtk4::prelude::*;
