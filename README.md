@@ -16,10 +16,6 @@ Clean Wi-Fi and hotspot management with an Adwaita-native UI.
 
 Modern network management for GNOME, built with Rust, GTK4, and libadwaita.
 
-The app is a native desktop frontend over system networking components such as `NetworkManager`,
-with optional integration for `ModemManager`, `nftables`, `tc`, and desktop keyring services when
-those features are enabled.
-
 Adwaita Network focuses on three things:
 
 - clean Wi-Fi and Ethernet management
@@ -27,21 +23,6 @@ Adwaita Network focuses on three things:
 - per-device hotspot control without dropping to shell scripts
 
 Current app version: `1.0.0`
-
----
-
-## ⚡ Quick Start
-
-```bash
-git clone https://github.com/PlayRood32/adw-network.git
-cd adw-network
-cargo build --release
-./target/release/adwaita-network
-```
-
-If you prefer, `./target/release/adw-network` is built too.
-
----
 
 ## 🖼️ Screenshots
 
@@ -192,55 +173,50 @@ Optional components:
 
 ---
 
-## 🚀 Installation
+## 🛠️ Building from Source
 
-### 📦 AUR
-
-```bash
-yay -S adw-network-bin
-```
-
-### 🛠️ Build From Source
+### 📥 Install Build Dependencies
 
 <details>
 <summary><b>Arch Linux</b></summary>
 
-```bash
 sudo pacman -S base-devel rust gtk4 libadwaita gdk-pixbuf2 networkmanager
-```
 </details>
 
 <details>
-<summary><b>Ubuntu / Debian</b></summary>
+<summary><b>Ubuntu/Debian</b></summary>
 
-```bash
 sudo apt install build-essential cargo libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev network-manager pkg-config
-```
 </details>
 
 <details>
 <summary><b>Fedora</b></summary>
 
-```bash
 sudo dnf groupinstall "Development Tools"
+
 sudo dnf install rust cargo gtk4-devel libadwaita-devel gdk-pixbuf2-devel NetworkManager pkg-config
-```
 </details>
 
+### 🧱 Compile & Install
+
 ```bash
+# Clone repository
 git clone https://github.com/PlayRood32/adw-network.git
 cd adw-network
+
+# Build release
 cargo build --release
-```
 
-Optional local install:
-
-```bash
+# Install (see BUILD & RUN INSTRUCTIONS section for complete steps)
 sudo install -Dm755 target/release/adwaita-network /usr/bin/adwaita-network
 sudo install -Dm644 data/com.github.adw-network.desktop /usr/share/applications/com.github.adw-network.desktop
 ```
 
-`cargo build --release` also produces `target/release/adw-network`, but the desktop entry currently launches `adwaita-network`.
+or for Arch btw users
+
+```
+yay -S adw-network
+```
 
 ---
 
