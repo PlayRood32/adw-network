@@ -10,3 +10,4 @@ Cargo.lock
 *.tar.gz
 hi.md
 .vscode/
+./docs/REPORT.md
