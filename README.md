@@ -1,218 +1,253 @@
-<div align="center">
-
 # Adwaita Network
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://opensource.org/licenses/GPL-3.0)
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![GTK](https://img.shields.io/badge/GTK-4.10-blue.svg)](https://gtk.org)
+<div align="center">
+  [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://opensource.org/licenses/GPL-3.0)
+  [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
+  [![GTK](https://img.shields.io/badge/GTK-4.10-blue.svg)](https://gtk.org)
 
-Modern network manager for GNOME.
-
-Clean WiFi and hotspot management with an Adwaita-native UI.
-
-[Features](#features) • [Installation](#installation) • [Whats-New](#whats-new) • [Usage](#usage) • [Building](#building-from-source)
-
+  <img src="data/icons/hicolor/scalable/apps/icon.png" alt="Adwaita Network icon" width="128" />
 </div>
+
+Modern network management for GNOME, built with Rust, GTK4, and libadwaita.
+
+Adwaita Network focuses on three things:
+
+- clean Wi-Fi and Ethernet management
+- a hotspot workflow that feels native on the desktop
+- per-device hotspot control without dropping to shell scripts
+
+Current app version: `1.0.0`
 
 ---
 
 ## 🖼️ Screenshots
 
 <div align="center">
-  <img src="docs/images/screenshot-1.png" alt="WiFi Page" width="32%">
-  <img src="docs/images/screenshot-2.png" alt="Hotspot Page" width="32%">
-  <img src="docs/images/screenshot-3.png" alt="Devices Page" width="32%">
+  <img src="docs/images/screenshot-1.png" alt="Wi-Fi page" width="32%">
+  <img src="docs/images/screenshot-2.png" alt="Hotspot page" width="32%">
+  <img src="docs/images/screenshot-3.png" alt="Devices page" width="32%">
 </div>
-
-## ✨ Features
-
-- WiFi scan, connect, and manage with signal quality indicators
-- Hotspot creation and configuration
-- QR code sharing for quick mobile connection
-- Real-time device list for active hotspot
-- Ethernet connection management
-- Network profiles (manual activation)
-- Minimal, responsive Settings dialog
-- Adwaita UI with light/dark theme support
-- Auto refresh for networks and devices
-- WPA/WPA2/WPA3 and hidden SSID support
-- Network details: band, channel, security, and signal strength
-- Auto-reconnect to saved networks
 
 ---
 
-## 🆕 Whats New
+## ✨ What It Does
 
-This release focuses on UI/UX polish and stability across WiFi, hotspot, and device views.
+### 📶 Wi-Fi
 
-### 📶 WiFi Page
-- Signal strength visualization (Excellent/Good/Fair/Weak/Very weak)
-- Password entry uses AlertDialog (no inline expansion)
-- Saved networks connect without prompting
-- Context menu actions: Connect/Disconnect, Forget, Show QR
-- Loading indicators for refresh and connection attempts
-- Detailed network info: band, channel, and security type
-- Clear disabled state with "Turn On Wi-Fi" action
+- scan nearby networks
+- connect to open, secured, and hidden networks
+- show signal strength, band, channel, and security details
+- show QR codes for saved Wi-Fi networks
+- manage auto-connect and custom DNS for active connections
 
-### 🔥 Hotspot Page
-- Separate Start/Stop and Save Configuration actions
-- Settings locked while hotspot is active
-- State indicator with icon and color
-- Automatic interface detection
-- Operation-in-progress guard to prevent concurrent start/stop
+### 🔥 Hotspot
 
-### 🖥️ Devices Page
-- Improved device discovery via ARP and lease sources
-- Hostname resolution where available
-- Device-type icons (phone vs computer)
-- Auto-refresh only while hotspot is active
+- create and stop a hotspot directly from the app
+- use an explicit `Apply Changes` flow for hotspot configuration
+- generate a temporary guest password for one hotspot session
+- share the active hotspot password through a QR code
+- select band, channel, hidden SSID mode, and interface
+- set global upload/download shaping
+- set a maximum connected-device count
 
-### 🔌 Ethernet Page
-- Ethernet enable/disable toggle
-- Connected profile card with details
-- Refresh wired connections list
-- Context menu actions for connections
+### 🖥️ Per-Device Hotspot Control
 
-### 🧭 Profiles Page
-- Create profile sets (Home/Work/Public)
-- Assign Wi-Fi and Ethernet connections by UUID
-- Rename and delete profiles
-- Manual activation from Profiles tab
-- Activating a profile updates `connection.autoconnect` for assigned/unassigned connections
-- Automatic switching is not enabled yet (manual switch only)
+- see connected device names when available from leases or reverse DNS
+- manage each connected device from the `Devices` page
+- manually block or unblock a device by MAC address
+- set per-device upload/download speed limits
+- set per-device connected-time quotas
+- set per-device upload/download quotas
+- block specific sites per device with a domain block list
 
-### 🧩 General
-- Polkit prompts documented and expected
-- Consistent dialogs for prompts and confirmations
-- Cleaner lists, improved responsive layout, and compact header controls
-- Top navigation supports icons-only mode with hover labels (Wi-Fi, Hotspot, etc.)
-- Settings dialog simplified for a minimal and clearer flow
-- Error handling and logging improvements
-- Respects system GTK theme
+### 🔌 Devices
+
+- list connected hotspot clients with hostname, IP, MAC, and lease information
+- categorize devices with icons based on hostname/vendor hints
+- open a per-device policy dialog directly from the list
+- show mobile-data controls through ModemManager when available
+
+### 🧭 Profiles and VPN
+
+- create connection profiles such as `Home`, `Work`, or `Public`
+- assign Wi-Fi, Ethernet, and supported VPN connections to profiles
+- manage WireGuard and OpenVPN connections from the app
+
+---
+
+## 🔄 Hotspot Workflow
+
+The hotspot page now uses an explicit apply model:
+
+1. Change the hotspot settings.
+2. Click `Apply Changes` to save them.
+3. If the hotspot is already running, the app reapplies the configuration.
+4. If the hotspot is off, the settings are stored and used on the next start.
+
+Starting the hotspot from the toggle still uses the values currently shown in the UI, so you do not have to click `Apply Changes` first when you are simply starting a new hotspot.
+
+---
+
+## 🔑 Temporary Guest Password
+
+The app can generate a temporary guest password from the hotspot page.
+
+- it is meant for short-lived sharing
+- it stays active until the next time the hotspot is turned off
+- after the hotspot stops, the app clears it automatically
+
+Important note:
+
+- NetworkManager exposes a single active hotspot password at a time
+- because of that, the temporary guest password replaces the active hotspot password for that session instead of creating two simultaneous PSKs
+
+---
+
+## 📋 Device Policies and Quotas
+
+Per-device rules are stored by MAC address and can include:
+
+- manual block
+- upload speed limit
+- download speed limit
+- connected-time quota
+- upload quota
+- download quota
+- blocked domains
+
+The quota reset policy is configurable in `Settings`:
+
+- `Never reset`
+- `Reset daily at 00:00`
+
+---
+
+## ✅ Requirements
+
+### Runtime Requirements
+
+- NetworkManager
+- GTK4-compatible desktop session
+- permissions to manage NetworkManager, usually through polkit
+
+Optional components:
+
+- `ModemManager` for mobile-data controls
+- `tc` for upload/download shaping
+- `nft` / nftables for MAC blocking, device limits, quotas, and blocked sites
+- NetworkManager VPN plugins for WireGuard/OpenVPN handling
+
+### Build Requirements
+
+- Rust toolchain
+- GTK4 development files
+- libadwaita development files
+- GDK Pixbuf development files
+- `pkg-config`
 
 ---
 
 ## 🚀 Installation
 
-### 📦 From AUR (Arch Linux)
+### 📦 AUR
+
 ```bash
 yay -S adw-network-bin
 ```
 
-### ✅ Prerequisites
-
-Required system dependencies:
-- GTK4 >= 4.10
-- libadwaita >= 1.6
-- NetworkManager (running)
-- Rust >= 1.70 (for building from source)
-- GDK Pixbuf 2.0
-
-Runtime requirements:
-- NetworkManager must be running and enabled
-- Your user must have permissions to manage NetworkManager (typically via polkit)
-- Some operations require administrator privileges and will show a system authentication dialog
-
----
-
-## 🛠️ Building from Source
-
-### 📥 Install Build Dependencies
+### 🛠️ Build From Source
 
 <details>
 <summary><b>Arch Linux</b></summary>
+
+```bash
 sudo pacman -S base-devel rust gtk4 libadwaita gdk-pixbuf2 networkmanager
+```
 </details>
 
 <details>
-<summary><b>Ubuntu/Debian</b></summary>
+<summary><b>Ubuntu / Debian</b></summary>
+
+```bash
 sudo apt install build-essential cargo libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev network-manager pkg-config
+```
 </details>
 
 <details>
 <summary><b>Fedora</b></summary>
-sudo dnf groupinstall "Development Tools"
 
+```bash
+sudo dnf groupinstall "Development Tools"
 sudo dnf install rust cargo gtk4-devel libadwaita-devel gdk-pixbuf2-devel NetworkManager pkg-config
+```
 </details>
 
-### 🧱 Compile & Install
 ```bash
-# Clone repository
 git clone https://github.com/PlayRood32/adw-network.git
 cd adw-network
-
-# Build release
 cargo build --release
+```
 
-# Install (see BUILD & RUN INSTRUCTIONS section for complete steps)
+Optional local install:
+
+```bash
 sudo install -Dm755 target/release/adwaita-network /usr/bin/adwaita-network
-
 sudo install -Dm644 data/com.github.adw-network.desktop /usr/share/applications/com.github.adw-network.desktop
+```
 
-```
-or
-```
-yay -S adw-network
-```
 ---
 
 ## 📖 Usage
 
-### 📶 WiFi Management
+### 📶 Wi-Fi
 
-1. Enable WiFi: toggle the WiFi switch in the WiFi tab
-2. Scan networks: click refresh or wait for automatic scan
-3. Signal strength: quality labels indicate expected performance
-4. Connect:
-   - Saved networks: click to connect immediately
-   - Open networks: click to connect
-   - Secured networks: enter password in dialog
-5. Details: view band, channel, and security type
-6. Context menu:
-   - Connect/Disconnect
-   - Forget Network
-   - Show QR Code
+1. Open the `Wi-Fi` page.
+2. Turn Wi-Fi on if needed.
+3. Refresh or wait for auto-scan.
+4. Choose a network or use `Hidden Network`.
+5. Use the context menu for disconnect, forget, or QR actions.
 
-### 🔥 Hotspot Setup
+### 🔥 Hotspot
 
-1. Configure:
-   - Network name (SSID)
-   - Password (8-63 characters) or leave empty for open network
-   - Frequency band (2.4 GHz, 5 GHz, Auto)
-   - Hidden network toggle
-   - Interface selection (auto-detected)
-2. Save configuration without starting
-3. Start hotspot
-4. Stop hotspot before changing settings
-5. Share via QR code
-6. Monitor clients in the Devices tab
+1. Open the `Hotspot` page.
+2. Set SSID, password, band, channel, visibility, and interface.
+3. Optionally generate a temporary guest password.
+4. Optionally configure advanced controls such as speed limits, max devices, and client rules.
+5. Click `Apply Changes` to store changes.
+6. Use the toggle to start or stop the hotspot.
 
-### 🧭 Device Monitoring
+### 🖥️ Device Management
 
-- View connected devices with IP, MAC, and hostname (when available)
-- Device icons for phones and computers
-- Auto-refresh every 5 seconds while hotspot is active
+1. Open the `Devices` page while the hotspot is running.
+2. Review the connected devices list.
+3. Click `Manage` on a device or use the context menu.
+4. Save a rule to block, throttle, quota-limit, or site-limit that device.
 
-### 🔌 Ethernet Management
+### ⚙️ Settings
 
-1. Enable Ethernet: toggle the Ethernet switch in the Ethernet tab
-2. Refresh connections list
-3. View connected profile details
-4. Use the context menu for connection actions
+Use `Settings` to control:
 
-### 🧭 Profiles Management
-
-1. Open the Profiles tab and create a new profile
-2. Set a profile name (for example: Home, Work, Public)
-3. Assign Wi-Fi/Ethernet connections to the profile
-4. Activate the profile directly from the Profiles tab
-5. The app enables auto-connect for assigned connections and disables it for others
+- theme mode
+- hotspot password storage mode
+- hotspot quota reset policy
+- auto refresh behavior
+- navigation layout preferences
 
 ---
 
-## 🗂️ Project Structure
-```
+## 📁 Configuration Files
+
+- hotspot config: `~/.config/adw-network/hotspot.json`
+- app settings: `~/.config/adw-network/settings.json`
+- profiles: `~/.config/adw-network/profiles.json`
+- hotspot runtime state: `~/.local/share/adw-network/hotspot-runtime.json`
+- logs: `~/.local/share/adw-network/adwaita-network.log`
+
+---
+
+## 🗂️ Project Layout
+
+```text
 ├── 📁 data
 │   ├── 📁 icons
 │   │   └── 📁 hicolor
@@ -227,26 +262,39 @@ yay -S adw-network
 │       └── 🖼️ screenshot-3.png
 ├── 📁 src
 │   ├── 📁 ui
+│   │   ├── 🦀 hotspot_page
+│   │   │   ├── 🦀 actions.rs
+│   │   │   ├── 🦀 mod.rs
+│   │   │   └── 🦀 password.rs
+│   │   ├── 📁 wifi_page
+│   │   │   ├── 🦀 actions.rs
+│   │   │   ├── 🦀 details.rs
+│   │   │   ├── 🦀 dialogs.rs
+│   │   │   └── 🦀 mod.rs
+│   │   ├── 🦀 common.rs
 │   │   ├── 🦀 devices_page.rs
 │   │   ├── 🦀 ethernet_page.rs
-│   │   ├── 🦀 hotspot_page.rs
 │   │   ├── 🦀 mod.rs
-│   │   ├── 🦀 profiles_page.rs
-│   │   └── 🦀 wifi_page.rs
+│   │   └── 🦀 profiles_page.rs
 │   ├── 🦀 config.rs
+│   ├── 🦀 hotspot_runtime.rs
 │   ├── 🦀 hotspot.rs
+│   ├── 🦀 leases.rs
 │   ├── 🦀 lib.rs
 │   ├── 🦀 main.rs
+│   ├── 🦀 modem_manager.rs
+│   ├── 🦀 nm_dbus.rs
 │   ├── 🦀 nm.rs
 │   ├── 🦀 profiles.rs
-│   ├── 🦀 qr.rs
 │   ├── 🦀 qr_dialog.rs
+│   ├── 🦀 qr.rs
 │   ├── 🦀 secrets.rs
+│   ├── 🦀 state.rs
 │   └── 🦀 window.rs
-├── ⚙️ .gitignore
-├── ⚙️ Cargo.toml
-├── 📄 LICENSE
-└── 📝 README.md
+├── 📦🦀 Cargo.toml
+├── ⚙️ com.github.adw-network.json
+├── ⚖️ LICENSE
+└── 📖 README.md
 ```
 
 ---
@@ -254,150 +302,123 @@ yay -S adw-network
 ## 🧪 Troubleshooting
 
 <details>
-<summary><b>Administrator password dialog keeps appearing</b></summary>
+<summary><b>I keep getting an administrator password dialog</b></summary>
 
-This is expected. NetworkManager requires elevated privileges for:
-- Creating hotspots
-- Connecting to new networks
-- Modifying network configurations
+That is expected for operations that change NetworkManager state, such as:
 
-The system authentication dialog is managed by Polkit and cannot be integrated into the app.
+- starting or stopping a hotspot
+- creating or modifying connections
+- applying network changes that require privileged access
 </details>
 
 <details>
-<summary><b>No networks appear in WiFi list</b></summary>
+<summary><b>Hotspot changes did not apply</b></summary>
 
-- Ensure WiFi is enabled
-- Verify NetworkManager is running: `systemctl status NetworkManager`
-- Check adapter status: `nmcli device status`
-- Scanning takes a few seconds; watch the refresh indicator
-- Check logs: `~/.local/share/adw-network/adwaita-network.log`
+- use `Apply Changes` after editing the hotspot settings
+- if the hotspot is already active, the app will reapply the configuration
+- if reapply fails, check the log for the exact NetworkManager or driver error
 </details>
 
 <details>
-<summary><b>GTK theme parser warnings</b></summary>
+<summary><b>The hotspot will not start</b></summary>
 
-If you set `GTK_THEME` to a non-GTK4-compatible theme, you may see parser warnings (e.g., `shade`, `mix`, `-gtk-icon-effect`).
-Unset `GTK_THEME` or switch to a GTK4-compatible theme to resolve.
-</details>
+Check the following:
 
-<details>
-<summary><b>Cannot modify hotspot settings while it's running</b></summary>
+- your adapter supports AP mode
+- `NetworkManager` is running
+- the chosen interface is not already in use by another active Wi-Fi connection
+- `tc` and `nft` are installed if you enabled advanced hotspot controls
 
-This is by design. Stop the hotspot before editing settings, then save and start again.
-</details>
+AP mode check:
 
-<details>
-<summary><b>Hotspot fails to start</b></summary>
-
-- Ensure you have administrator privileges
-- Verify adapter supports AP mode:
 ```bash
-  iw list | grep "Supported interface modes" -A 10
+iw list | grep "Supported interface modes" -A 10
 ```
-  Look for "AP" in the output
-- Try 2.4 GHz for better compatibility
-- Ensure no other connection is using the same interface
-- Check logs for errors
+
+Look for `AP` in the output.
+</details>
+
+<details>
+<summary><b>Device quotas or blocked sites are not enforced</b></summary>
+
+- install `nftables`
+- make sure the hotspot is active
+- if you configured speed shaping, install `tc` as well
+- after editing rules, save them from the dialog or use `Apply Changes`
+</details>
+
+<details>
+<summary><b>No devices appear in the Devices page</b></summary>
+
+- confirm that the hotspot is active
+- refresh the page manually
+- verify that lease files are readable on the host
+- check the app log for `ip neigh` or lease-loading warnings
 </details>
 
 ---
 
-## 🤝 Contributing
+## ⚠️ Known Limits
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make changes
-4. Test thoroughly
-5. Commit (`git commit -m 'Add amazing feature'`)
-6. Push (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
-
-### 🧹 Code Style
-
-- Run `cargo fmt`
-- Run `cargo clippy`
-- Write clear commit messages
-- Update documentation for new features
+- hotspot startup can still take a few seconds on some hardware
+- 5 GHz support depends on adapter and regulatory domain support
+- some adapters do not support AP mode at all
+- blocked sites are domain-to-IP based, so they are best-effort rather than a full proxy-style content filter
+- the temporary guest password is a temporary replacement for the active hotspot password, not a second simultaneous WPA key
 
 ---
 
-## 📝 Configuration
+## 🧰 Key Rust Crate Versions
 
-- Hotspot config: `~/.config/adw-network/hotspot.json`
-- Profiles config: `~/.config/adw-network/profiles.json`
-- App settings: `~/.config/adw-network/settings.json`
-- Application logs: `~/.local/share/adw-network/adwaita-network.log`
+The README is aligned with `Cargo.toml`.
+
+<details>
+<summary><b>View all crate versions</b></summary>
+
+- `gtk4 = 0.11.2`
+- `libadwaita = 0.9.1`
+- `gdk-pixbuf = 0.22.0`
+- `glib = 0.22.5`
+- `gio = 0.22.5`
+- `tokio = 1.51.1`
+- `anyhow = 1.0.101`
+- `rand = 0.10.1`
+- `qrcode = 0.14.1`
+- `serde = 1.0.228`
+- `serde_json = 1.0.149`
+- `log = 0.4.29`
+- `env_logger = 0.11.10`
+- `chrono = 0.4.43`
+- `tempfile = 3.27.0`
+- `hostname = 0.4.2`
+- `keyring = 3.6.3`
+- `uuid = 1.23.0`
+- `zbus = 5.14.0`
+- `zvariant = 5.9.2`
+- `dns-lookup = 3.0.1`
+</details>
 
 ---
 
-## 🐛 Known Issues
+## 🔧 Development
 
-- Hotspot activation can take a few seconds on some systems
-- 5 GHz support depends on hardware capabilities
-- Some adapters do not support AP mode
-- Polkit dialogs appear outside the app
+Recommended checks:
 
-Report bugs at: [GitHub Issues](https://github.com/PlayRood32/adw-network/issues)
+```bash
+cargo fmt
+cargo check
+cargo test
+```
 
 ---
 
 ## 📄 License
 
-This project is licensed under **GPL-3.0-or-later**. See [LICENSE](LICENSE) for details.
+GPL-3.0-or-later. See [LICENSE](LICENSE).
 
 ---
 
 ## 📬 Support
 
-- Issues: [GitHub Issues](https://github.com/PlayRood32/adw-network/issues)
-- Discussions: [GitHub Discussions](https://github.com/PlayRood32/adw-network/discussions)
-
----
-
-## 🎯 Roadmap
-
-- [ ] VPN integration
-- [ ] Mobile data support
-- [✔] Network speed monitoring
-- [✔] Custom DNS configuration
-- [✔] Ethernet connection management
-- [✔] Network profiles (home/work/public)
-- [ ] Bandwidth limiting for hotspot
-- [ ] MAC address filtering for hotspot
-
----
-
-## 🙏 Credits & Inspirations
-
-- [airctl](https://github.com/pshycodr/airctl) for signal visualization ideas
-- GNOME Settings for network UI patterns
-- NetworkManager for backend capabilities
-- GTK4 and libadwaita for the application framework
-
-### 🧰 Key Dependencies
-
-- [gtk4-rs](https://gtk-rs.org/)
-- [libadwaita-rs](https://world.pages.gitlab.gnome.org/Rust/libadwaita-rs/)
-- [qrcode](https://github.com/kennytm/qrcode-rust)
-- [tokio](https://tokio.rs/)
-- [serde](https://serde.rs/)
-- [anyhow](https://github.com/dtolnay/anyhow)
-- [image](https://github.com/image-rs/image)
-- [rand](https://rust-random.github.io/rand/)
-- [chrono](https://github.com/chronotope/chrono)
-- [env_logger](https://github.com/rust-cli/env_logger/)
-- [log](https://github.com/rust-lang/log)
-
----
-
-## ⭐ Show Your Support
-
-If you found this project useful, consider giving it a star.
-
-[![Star this repo](https://img.shields.io/github/stars/PlayRood32/adw-network?style=social)](https://github.com/PlayRood32/adw-network)
-
-<div align="center">
-
-[Back to Top](#adwaita-network)
-</div>
+- issues: <https://github.com/PlayRood32/adw-network/issues>
+- discussions: <https://github.com/PlayRood32/adw-network/discussions>

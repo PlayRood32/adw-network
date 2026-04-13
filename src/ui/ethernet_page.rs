@@ -4,14 +4,14 @@
 // Credits & Inspirations:
 // - GNOME Settings Network panel for UI/UX patterns
 
-use gtk4::prelude::*;
 use gtk4::glib;
+use gtk4::prelude::*;
 use libadwaita::{self as adw, prelude::*};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::nm::{self, Connection, DeviceType, NetworkManager};
-use crate::ui::icon_name;
+use crate::ui::{common, icon_name};
 
 pub struct EthernetPage {
     pub widget: gtk4::Box,
@@ -19,14 +19,39 @@ pub struct EthernetPage {
     ethernet_switch: adw::SwitchRow,
     refresh_button: gtk4::Button,
     spinner: gtk4::Spinner,
+    operation_status_label: gtk4::Label,
     connected_card: gtk4::Box,
     connected_title: gtk4::Label,
     connected_subtitle: gtk4::Label,
     list: gtk4::ListBox,
     empty_state: adw::StatusPage,
+    // Shared UI state - accessed only from the main thread.
     connections: Rc<RefCell<Vec<Connection>>>,
+    // Shared UI state - accessed only from the main thread.
     connected_connection: Rc<RefCell<Option<Connection>>>,
+    // Shared UI state - accessed only from the main thread.
     ethernet_devices: Rc<RefCell<Vec<String>>>,
+}
+
+impl Clone for EthernetPage {
+    fn clone(&self) -> Self {
+        Self {
+            widget: self.widget.clone(),
+            toast_overlay: self.toast_overlay.clone(),
+            ethernet_switch: self.ethernet_switch.clone(),
+            refresh_button: self.refresh_button.clone(),
+            spinner: self.spinner.clone(),
+            operation_status_label: self.operation_status_label.clone(),
+            connected_card: self.connected_card.clone(),
+            connected_title: self.connected_title.clone(),
+            connected_subtitle: self.connected_subtitle.clone(),
+            list: self.list.clone(),
+            empty_state: self.empty_state.clone(),
+            connections: self.connections.clone(),
+            connected_connection: self.connected_connection.clone(),
+            ethernet_devices: self.ethernet_devices.clone(),
+        }
+    }
 }
 
 impl EthernetPage {
@@ -38,17 +63,19 @@ impl EthernetPage {
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vexpand(true)
             .build();
+        let clamp = adw::Clamp::builder()
+            .maximum_size(920)
+            .tightening_threshold(560)
+            .build();
 
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        content.set_margin_top(12);
-        content.set_margin_bottom(12);
-        content.set_margin_start(12);
-        content.set_margin_end(12);
+        content.set_margin_top(16);
+        content.set_margin_bottom(16);
+        content.set_margin_start(16);
+        content.set_margin_end(16);
 
         // Ethernet Toggle
-        let ethernet_switch = adw::SwitchRow::builder()
-            .title("Use Ethernet")
-            .build();
+        let ethernet_switch = adw::SwitchRow::builder().title("Use Ethernet").build();
 
         let switch_group = adw::PreferencesGroup::new();
         switch_group.add(&ethernet_switch);
@@ -67,6 +94,12 @@ impl EthernetPage {
 
         let spinner = gtk4::Spinner::new();
         spinner.add_css_class("big-spinner");
+        spinner.set_size_request(28, 28);
+
+        let operation_status_label = gtk4::Label::new(None);
+        operation_status_label.set_halign(gtk4::Align::Start);
+        operation_status_label.set_opacity(0.7);
+        operation_status_label.set_visible(false);
 
         let refresh_button = gtk4::Button::builder()
             .icon_name(icon_name(
@@ -85,6 +118,7 @@ impl EthernetPage {
         header_box.append(&spinner);
         header_box.append(&refresh_button);
         content.append(&header_box);
+        content.append(&operation_status_label);
 
         // Connected card
         let connected_card = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -127,7 +161,8 @@ impl EthernetPage {
         content.append(&list);
         content.append(&empty_state);
 
-        scrolled.set_child(Some(&content));
+        clamp.set_child(Some(&content));
+        scrolled.set_child(Some(&clamp));
         toast_overlay.set_child(Some(&scrolled));
         widget.append(&toast_overlay);
 
@@ -141,6 +176,7 @@ impl EthernetPage {
             ethernet_switch: ethernet_switch.clone(),
             refresh_button: refresh_button.clone(),
             spinner: spinner.clone(),
+            operation_status_label: operation_status_label.clone(),
             connected_card: connected_card.clone(),
             connected_title: connected_title.clone(),
             connected_subtitle: connected_subtitle.clone(),
@@ -152,7 +188,7 @@ impl EthernetPage {
         };
 
         // Connected card context menu
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         let connected_card_widget = page.connected_card.clone().upcast::<gtk4::Widget>();
         let connected_card = page.connected_card.clone();
         let connected_menu_gesture = gtk4::GestureClick::new();
@@ -165,7 +201,7 @@ impl EthernetPage {
         connected_card.add_controller(connected_menu_gesture);
 
         // Initial state
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         glib::spawn_future_local(async move {
             match nm::is_ethernet_enabled().await {
                 Ok(enabled) => {
@@ -182,10 +218,10 @@ impl EthernetPage {
         });
 
         // Ethernet switch handler
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         ethernet_switch.connect_active_notify(move |switch| {
             let enabled = switch.is_active();
-            let page = page_ref.clone_ref();
+            let page = page_ref.clone();
             page.update_enabled_state(enabled);
 
             glib::spawn_future_local(async move {
@@ -200,16 +236,17 @@ impl EthernetPage {
                     }
                     Err(e) => {
                         log::error!("Failed to toggle ethernet: {}", e);
-                        page.show_toast(&format!("Failed to toggle ethernet: {}", e));
+                        // * Use operation-specific ethernet toggle failure messaging.
+                        page.show_toast(&format!("Failed to change Ethernet state: {}", e));
                     }
                 }
             });
         });
 
         // Refresh handler
-        let page_ref = page.clone_ref();
+        let page_ref = page.clone();
         refresh_button.connect_clicked(move |_| {
-            let page = page_ref.clone_ref();
+            let page = page_ref.clone();
             glib::spawn_future_local(async move {
                 page.refresh_connections().await;
             });
@@ -218,34 +255,14 @@ impl EthernetPage {
         page
     }
 
-    pub fn clone_ref(&self) -> Self {
-        Self {
-            widget: self.widget.clone(),
-            toast_overlay: self.toast_overlay.clone(),
-            ethernet_switch: self.ethernet_switch.clone(),
-            refresh_button: self.refresh_button.clone(),
-            spinner: self.spinner.clone(),
-            connected_card: self.connected_card.clone(),
-            connected_title: self.connected_title.clone(),
-            connected_subtitle: self.connected_subtitle.clone(),
-            list: self.list.clone(),
-            empty_state: self.empty_state.clone(),
-            connections: self.connections.clone(),
-            connected_connection: self.connected_connection.clone(),
-            ethernet_devices: self.ethernet_devices.clone(),
-        }
-    }
-
     async fn refresh_connections(&self) {
         if !self.ethernet_switch.is_active() {
+            self.set_operation_state(false, "");
             self.show_disabled_state();
             return;
         }
 
-        self.spinner.set_visible(true);
-        self.spinner.start();
-        self.refresh_button.set_sensitive(false);
-        self.list.add_css_class("list-loading");
+        self.set_operation_state(true, "Refreshing...");
 
         match NetworkManager::get_devices().await {
             Ok(devices) => {
@@ -254,11 +271,30 @@ impl EthernetPage {
                     .filter(|d| d.device_type == DeviceType::Ethernet)
                     .map(|d| d.name)
                     .collect::<Vec<_>>();
-                *self.ethernet_devices.borrow_mut() = ethernet;
+                debug_assert!(
+                    self.ethernet_devices.try_borrow_mut().is_ok(),
+                    "Shared state borrow conflict: ethernet_devices_set"
+                );
+                if let Ok(mut ethernet_devices) = self.ethernet_devices.try_borrow_mut() {
+                    *ethernet_devices = ethernet;
+                } else {
+                    log::error!("Borrow conflict in UI state");
+                }
             }
             Err(e) => {
                 log::warn!("Failed to get devices: {}", e);
-                self.ethernet_devices.borrow_mut().clear();
+                if nm::is_nmcli_retrieval_error(&e.to_string()) {
+                    self.show_toast(nm::NMCLI_RETRIEVAL_TOAST);
+                }
+                debug_assert!(
+                    self.ethernet_devices.try_borrow_mut().is_ok(),
+                    "Shared state borrow conflict: ethernet_devices_clear"
+                );
+                if let Ok(mut ethernet_devices) = self.ethernet_devices.try_borrow_mut() {
+                    ethernet_devices.clear();
+                } else {
+                    log::error!("Borrow conflict in UI state");
+                }
             }
         }
 
@@ -277,20 +313,40 @@ impl EthernetPage {
                         a.name.cmp(&b.name)
                     }
                 });
-                *self.connections.borrow_mut() = wired.clone();
+                debug_assert!(
+                    self.connections.try_borrow_mut().is_ok(),
+                    "Shared state borrow conflict: connections_set"
+                );
+                if let Ok(mut connections) = self.connections.try_borrow_mut() {
+                    *connections = wired.clone();
+                } else {
+                    log::error!("Borrow conflict in UI state");
+                }
                 self.populate_connections(wired);
             }
             Err(e) => {
                 log::error!("Failed to get connections: {}", e);
-                self.show_toast(&format!("Failed to refresh: {}", e));
+                if nm::is_nmcli_retrieval_error(&e.to_string()) {
+                    self.show_toast(nm::NMCLI_RETRIEVAL_TOAST);
+                } else {
+                    // * Avoid generic refresh errors by naming the failing ethernet operation.
+                    self.show_toast(&format!("Failed to refresh Ethernet connections: {}", e));
+                }
                 self.populate_connections(Vec::new());
             }
         }
 
-        self.spinner.stop();
-        self.spinner.set_visible(false);
-        self.refresh_button.set_sensitive(true);
-        self.list.remove_css_class("list-loading");
+        self.set_operation_state(false, "");
+    }
+
+    fn set_operation_state(&self, active: bool, status: &str) {
+        common::set_busy(
+            &self.spinner,
+            &self.operation_status_label,
+            Some(&self.refresh_button),
+            active,
+            if active { Some(status) } else { None },
+        );
     }
 
     fn update_enabled_state(&self, enabled: bool) {
@@ -298,6 +354,7 @@ impl EthernetPage {
         self.list.set_sensitive(enabled);
         if !enabled {
             self.show_disabled_state();
+            self.operation_status_label.set_visible(false);
         }
     }
 
@@ -314,7 +371,16 @@ impl EthernetPage {
 
         let connected = connections.iter().find(|c| c.active).cloned();
         if let Some(ref conn) = connected {
-            *self.connected_connection.borrow_mut() = Some(conn.clone());
+            debug_assert!(
+                self.connected_connection.try_borrow_mut().is_ok(),
+                "Shared state borrow conflict: connected_connection_set"
+            );
+            if let Ok(mut connected_connection) = self.connected_connection.try_borrow_mut() {
+                *connected_connection = Some(conn.clone());
+            } else {
+                log::error!("Borrow conflict in UI state");
+                return;
+            }
             self.update_connected_card(conn);
             self.connected_card.set_visible(true);
             self.connected_card.add_css_class("fade-in");
@@ -340,9 +406,8 @@ impl EthernetPage {
         if !show_list && connected.is_none() {
             self.empty_state.set_visible(true);
             self.empty_state.set_title("No Wired Connections");
-            self.empty_state.set_description(Some(
-                "Connect an ethernet cable or create a wired profile",
-            ));
+            self.empty_state
+                .set_description(Some("Connect an ethernet cable or create a wired profile"));
         }
     }
 
@@ -351,7 +416,16 @@ impl EthernetPage {
             self.list.remove(&child);
         }
         self.connected_card.set_visible(false);
-        self.connected_connection.borrow_mut().take();
+        debug_assert!(
+            self.connected_connection.try_borrow_mut().is_ok(),
+            "Shared state borrow conflict: connected_connection_clear"
+        );
+        if let Ok(mut connected_connection) = self.connected_connection.try_borrow_mut() {
+            connected_connection.take();
+        } else {
+            log::error!("Borrow conflict in UI state");
+            return;
+        }
         self.empty_state.set_visible(true);
     }
 
@@ -390,7 +464,11 @@ impl EthernetPage {
         row.add_prefix(&icon);
 
         let action_button = gtk4::Button::builder()
-            .label(if connection.active { "Disconnect" } else { "Connect" })
+            .label(if connection.active {
+                "Disconnect"
+            } else {
+                "Connect"
+            })
             .css_classes(vec!["flat".to_string()])
             .build();
         row.add_suffix(&action_button);
@@ -400,10 +478,10 @@ impl EthernetPage {
         // Context menu
         self.add_context_menu(&row.clone().upcast::<gtk4::Widget>(), connection);
 
-        let page = self.clone_ref();
+        let page = self.clone();
         let connection_for_action = connection.clone();
         action_button.connect_clicked(move |_| {
-            let page = page.clone_ref();
+            let page = page.clone();
             let connection = connection_for_action.clone();
             glib::spawn_future_local(async move {
                 if connection.active {
@@ -414,11 +492,11 @@ impl EthernetPage {
             });
         });
 
-        let page = self.clone_ref();
+        let page = self.clone();
         let connection_for_row = connection.clone();
         row.set_activatable(true);
         row.connect_activated(move |_| {
-            let page = page.clone_ref();
+            let page = page.clone();
             let connection = connection_for_row.clone();
             glib::spawn_future_local(async move {
                 if connection.active {
@@ -437,7 +515,7 @@ impl EthernetPage {
         gesture.set_button(3);
 
         let connection_for_menu = connection.clone();
-        let page_for_menu = self.clone_ref();
+        let page_for_menu = self.clone();
         let widget_for_menu = widget.clone();
 
         gesture.connect_released(move |_gesture, _n_press, x, y| {
@@ -451,12 +529,7 @@ impl EthernetPage {
         let popover = gtk4::Popover::new();
         popover.set_position(gtk4::PositionType::Bottom);
         popover.set_has_arrow(false);
-        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(
-            x as i32,
-            y as i32,
-            1,
-            1,
-        )));
+        popover.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
 
         let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         menu_box.add_css_class("menu");
@@ -469,11 +542,11 @@ impl EthernetPage {
                 .css_classes(vec!["flat".to_string()])
                 .build();
 
-            let page_disc = self.clone_ref();
+            let page_disc = self.clone();
             let conn_disc = connection.clone();
             let popover_disc = popover.clone();
             disconnect_btn.connect_clicked(move |_| {
-                let page = page_disc.clone_ref();
+                let page = page_disc.clone();
                 let connection = conn_disc.clone();
                 popover_disc.popdown();
 
@@ -489,11 +562,11 @@ impl EthernetPage {
                 .css_classes(vec!["flat".to_string()])
                 .build();
 
-            let page_conn = self.clone_ref();
+            let page_conn = self.clone();
             let conn_conn = connection.clone();
             let popover_conn = popover.clone();
             connect_btn.connect_clicked(move |_| {
-                let page = page_conn.clone_ref();
+                let page = page_conn.clone();
                 let connection = conn_conn.clone();
                 popover_conn.popdown();
 
@@ -510,11 +583,11 @@ impl EthernetPage {
             .css_classes(vec!["flat".to_string()])
             .build();
 
-        let page_details = self.clone_ref();
+        let page_details = self.clone();
         let conn_details = connection.clone();
         let popover_details = popover.clone();
         details_btn.connect_clicked(move |_| {
-            let page = page_details.clone_ref();
+            let page = page_details.clone();
             let connection = conn_details.clone();
             popover_details.popdown();
 
@@ -544,18 +617,18 @@ impl EthernetPage {
 
         let auto_switch_state = auto_switch.clone();
         let conn_state = connection.clone();
-        let page_state = self.clone_ref();
+        let page_state = self.clone();
         glib::spawn_future_local(async move {
             if let Ok(current) = conn_state.autoconnect().await {
                 auto_switch_state.set_active(current);
             }
             auto_switch_state.set_sensitive(true);
 
-            let page = page_state.clone_ref();
+            let page = page_state.clone();
             let conn = conn_state.clone();
             auto_switch_state.connect_active_notify(move |switch| {
                 let enabled = switch.is_active();
-                let page = page.clone_ref();
+                let page = page.clone();
                 let conn = conn.clone();
 
                 glib::spawn_future_local(async move {
@@ -573,6 +646,7 @@ impl EthernetPage {
     }
 
     async fn connect_connection(&self, connection: &Connection) {
+        self.set_operation_state(true, "Connecting...");
         self.show_toast("Connecting...");
 
         match connection.activate().await {
@@ -580,18 +654,16 @@ impl EthernetPage {
                 self.show_toast(&format!("Connected to {}", connection.name));
                 self.refresh_connections().await;
             }
-            Ok(nm::ConnectStatus::Queued) => {
-                self.show_toast("Connection queued...");
-                self.refresh_connections().await;
-            }
             Err(e) => {
                 log::error!("Connection failed: {}", e);
                 self.show_toast(&format!("Failed to connect: {}", e));
+                self.set_operation_state(false, "");
             }
         }
     }
 
     async fn disconnect_connection(&self, connection: &Connection) {
+        self.set_operation_state(true, "Disconnecting...");
         match connection.deactivate().await {
             Ok(_) => {
                 self.show_toast("Disconnected");
@@ -600,13 +672,13 @@ impl EthernetPage {
             Err(e) => {
                 log::error!("Disconnect failed: {}", e);
                 self.show_toast(&format!("Failed to disconnect: {}", e));
+                self.set_operation_state(false, "");
             }
         }
     }
 
     fn show_toast(&self, message: &str) {
-        let toast = adw::Toast::new(message);
-        self.toast_overlay.add_toast(toast);
+        common::show_toast(&self.toast_overlay, message);
     }
 
     async fn show_connection_details_dialog(&self, connection: &Connection) {
@@ -617,6 +689,12 @@ impl EthernetPage {
             .content_width(520)
             .content_height(700)
             .build();
+        let parent_window = self
+            .widget
+            .root()
+            .and_then(|root| root.downcast::<gtk4::Window>().ok());
+        // * Make the connection details dialog resize with the main window.
+        common::make_dialog_responsive(&dialog, parent_window.as_ref(), 520, 700);
 
         let main_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
@@ -667,7 +745,11 @@ impl EthernetPage {
         let name_label = gtk4::Label::new(Some(&connection.name));
         name_label.add_css_class("title-2");
 
-        let status_text = if connection.active { "Connected" } else { "Not connected" };
+        let status_text = if connection.active {
+            "Connected"
+        } else {
+            "Not connected"
+        };
         let status_label = gtk4::Label::new(Some(status_text));
         status_label.set_opacity(0.7);
 
@@ -685,16 +767,17 @@ impl EthernetPage {
             "Ethernet".to_string(),
         ));
         if let Some(dev) = connection.device.as_ref() {
-            items.push((
-                "computer-symbolic",
-                "Device".to_string(),
-                dev.to_string(),
-            ));
+            items.push(("computer-symbolic", "Device".to_string(), dev.to_string()));
         }
         items.push((
             "view-refresh-symbolic",
             "State".to_string(),
-            if connection.active { "Connected" } else { "Disconnected" }.to_string(),
+            if connection.active {
+                "Connected"
+            } else {
+                "Disconnected"
+            }
+            .to_string(),
         ));
 
         let items_len = items.len();
@@ -708,7 +791,10 @@ impl EthernetPage {
             let icon_widget = gtk4::Image::new();
             icon_widget.set_icon_name(Some(icon_name(
                 icon,
-                &["network-wired-symbolic", "network-transmit-receive-symbolic"][..],
+                &[
+                    "network-wired-symbolic",
+                    "network-transmit-receive-symbolic",
+                ][..],
             )));
             icon_widget.set_pixel_size(24);
             icon_widget.set_opacity(0.7);
@@ -829,7 +915,7 @@ impl EthernetPage {
         main_box.append(&scrolled);
         dialog.set_child(Some(&main_box));
 
-        if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
+        if let Some(parent) = parent_window.as_ref() {
             dialog.present(Some(parent));
         } else {
             dialog.present(None::<&gtk4::Window>);

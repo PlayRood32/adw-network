@@ -1,13 +1,17 @@
 // File: secrets.rs
 // Location: /src/secrets.rs
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use keyring::Error as KeyringError;
 
 const KEYRING_SERVICE: &str = "adw-network";
 const KEYRING_USERNAME: &str = "hotspot-password";
 
 pub fn store_hotspot_password(password: &str) -> Result<()> {
+    if password.is_empty() {
+        return delete_hotspot_password();
+    }
+
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
     entry
         .set_password(password)
@@ -19,7 +23,8 @@ pub fn load_hotspot_password() -> Result<Option<String>> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USERNAME)?;
     match entry.get_password() {
         Ok(password) => Ok(Some(password)),
-        Err(_) => Ok(None),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow!("Keyring read failed: {}", e)),
     }
 }
 
