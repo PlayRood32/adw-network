@@ -1,14 +1,24 @@
+<div align="center">
+
 # Adwaita Network
 
-<div align="center">
-  [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://opensource.org/licenses/GPL-3.0)
-  [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-  [![GTK](https://img.shields.io/badge/GTK-4.10-blue.svg)](https://gtk.org)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://opensource.org/licenses/GPL-3.0)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org)
+[![GTK](https://img.shields.io/badge/GTK-4.10-blue.svg)](https://gtk.org)
 
-  <img src="data/icons/hicolor/scalable/apps/icon.png" alt="Adwaita Network icon" width="128" />
+Modern network manager for GNOME.
+
+Clean Wi-Fi and hotspot management with an Adwaita-native UI.
+
+[What It Does](#-what-it-does) • [Hotspot Workflow](#-hotspot-workflow) • [Installation](#-installation) • [Usage](#-usage) • [Development](#-development)
+
 </div>
 
 Modern network management for GNOME, built with Rust, GTK4, and libadwaita.
+
+The app is a native desktop frontend over system networking components such as `NetworkManager`,
+with optional integration for `ModemManager`, `nftables`, `tc`, and desktop keyring services when
+those features are enabled.
 
 Adwaita Network focuses on three things:
 
@@ -17,6 +27,19 @@ Adwaita Network focuses on three things:
 - per-device hotspot control without dropping to shell scripts
 
 Current app version: `1.0.0`
+
+---
+
+## ⚡ Quick Start
+
+```bash
+git clone https://github.com/PlayRood32/adw-network.git
+cd adw-network
+cargo build --release
+./target/release/adwaita-network
+```
+
+If you prefer, `./target/release/adw-network` is built too.
 
 ---
 
@@ -31,6 +54,11 @@ Current app version: `1.0.0`
 ---
 
 ## ✨ What It Does
+
+### 📊 Status
+
+- show live upload/download speed in the header bar for the active primary connection
+- show current connection state for Wi-Fi, wired, or hotspot
 
 ### 📶 Wi-Fi
 
@@ -122,6 +150,22 @@ The quota reset policy is configurable in `Settings`:
 
 ---
 
+## 🎯✅ Feature Status
+
+<ul>
+  <li><input type="checkbox" checked disabled> VPN integration</li>
+  <li><input type="checkbox" checked disabled> Mobile data support</li>
+  <li><input type="checkbox" checked disabled> Network speed monitoring</li>
+  <li><input type="checkbox" checked disabled> Custom DNS configuration</li>
+  <li><input type="checkbox" checked disabled> Ethernet connection management</li>
+  <li><input type="checkbox" checked disabled> Network profiles (home/work/public)</li>
+  <li><input type="checkbox" checked disabled> Bandwidth limiting for hotspot</li>
+  <li><input type="checkbox" checked disabled> MAC address filtering for hotspot</li>
+</ul>
+
+
+---
+
 ## ✅ Requirements
 
 ### Runtime Requirements
@@ -133,6 +177,7 @@ The quota reset policy is configurable in `Settings`:
 Optional components:
 
 - `ModemManager` for mobile-data controls
+- a Secret Service-compatible keyring for the default keyring-backed hotspot password storage
 - `tc` for upload/download shaping
 - `nft` / nftables for MAC blocking, device limits, quotas, and blocked sites
 - NetworkManager VPN plugins for WireGuard/OpenVPN handling
@@ -195,6 +240,8 @@ sudo install -Dm755 target/release/adwaita-network /usr/bin/adwaita-network
 sudo install -Dm644 data/com.github.adw-network.desktop /usr/share/applications/com.github.adw-network.desktop
 ```
 
+`cargo build --release` also produces `target/release/adw-network`, but the desktop entry currently launches `adwaita-network`.
+
 ---
 
 ## 📖 Usage
@@ -205,7 +252,7 @@ sudo install -Dm644 data/com.github.adw-network.desktop /usr/share/applications/
 2. Turn Wi-Fi on if needed.
 3. Refresh or wait for auto-scan.
 4. Choose a network or use `Hidden Network`.
-5. Use the context menu for disconnect, forget, or QR actions.
+5. Use the context menu for actions such as disconnect, forget, or QR code sharing.
 
 ### 🔥 Hotspot
 
@@ -230,8 +277,8 @@ Use `Settings` to control:
 - theme mode
 - hotspot password storage mode
 - hotspot quota reset policy
-- auto refresh behavior
-- navigation layout preferences
+- auto-scan behavior
+- navigation layout and visible modules
 
 ---
 
@@ -378,6 +425,7 @@ The README is aligned with `Cargo.toml`.
 - `gtk4 = 0.11.2`
 - `libadwaita = 0.9.1`
 - `gdk-pixbuf = 0.22.0`
+- `image = 0.25.10`
 - `glib = 0.22.5`
 - `gio = 0.22.5`
 - `tokio = 1.51.1`
@@ -388,7 +436,7 @@ The README is aligned with `Cargo.toml`.
 - `serde_json = 1.0.149`
 - `log = 0.4.29`
 - `env_logger = 0.11.10`
-- `chrono = 0.4.43`
+- `chrono = 0.4.44`
 - `tempfile = 3.27.0`
 - `hostname = 0.4.2`
 - `keyring = 3.6.3`
