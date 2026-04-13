@@ -47,7 +47,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "adwaita-network"
 path = "src/main.rs"
-
-[[bin]]
-name = "adw-network"
-path = "src/main.rs"
