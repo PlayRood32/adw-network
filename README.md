@@ -1,5 +1,9 @@
 # Adwaita Network
 
+<div align="center">
+  <img src="data/icons/hicolor/scalable/apps/icon.png" alt="Adwaita Network icon" width="128" />
+</div>
+
 Modern network management for GNOME, built with Rust, GTK4, and libadwaita.
 
 Adwaita Network focuses on three things:
