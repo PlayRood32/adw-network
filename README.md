@@ -214,8 +214,26 @@ sudo install -Dm644 data/com.github.adw-network.desktop /usr/share/applications/
 
 or for Arch btw users
 
-```
+Stable:
+```bash
 yay -S adw-network
+```
+
+or
+
+```bash
+paru -S adw-network
+```
+
+Latest binary package (AUR - bin):
+```bash
+yay -S adw-network-bin
+```
+
+or
+
+```bash
+paru -S adw-network-bin
 ```
 
 ---
