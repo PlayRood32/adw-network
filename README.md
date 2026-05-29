@@ -171,6 +171,20 @@ Optional components:
 - GDK Pixbuf development files
 - `pkg-config`
 
+### Flatpak Packaging
+
+The repository includes `com.github.adw-network.json` for Flatpak builds. The manifest grants filtered D-Bus access to:
+
+- `org.freedesktop.NetworkManager` on the system bus
+- `org.freedesktop.ModemManager1` on the system bus
+- `org.freedesktop.secrets` on the session bus
+
+Build locally with:
+
+```bash
+flatpak-builder --force-clean build-dir com.github.adw-network.json
+```
+
 ---
 
 ## 🛠️ Building from Source
