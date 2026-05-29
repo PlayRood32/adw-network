@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+
+  <vendor>adw-network</vendor>
+  <vendor_url>https://github.com/PlayRood32/adw-network</vendor_url>
+  <icon_name>com.github.adw-network</icon_name>
+
+  <action id="com.github.adw-network.apply-nft-rules">
+    <description>Apply nftables rules for hotspot management</description>
+    <message>Authentication is required to apply network filtering rules</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/nft</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+
+  <action id="com.github.adw-network.apply-tc-limits">
+    <description>Apply traffic control (tc) rules for hotspot bandwidth shaping</description>
+    <message>Authentication is required to configure traffic shaping</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/sbin/tc</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+
+  <action id="com.github.adw-network.manage-network-interfaces">
+    <description>Manage network interfaces for hotspot creation</description>
+    <message>Authentication is required to configure network interfaces</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/sbin/ip</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+
+</policyconfig>
