@@ -1,5 +1,4 @@
-// File: actions.rs
-// Location: /src/ui/wifi_page/actions.rs
+// * ./src/ui/wifi_page/actions.rs
 
 use super::WifiPage;
 

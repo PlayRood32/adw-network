@@ -1,5 +1,4 @@
-// File: devices_page.rs
-// Location: /src/ui/devices_page.rs
+// * ./src/ui/devices_page.rs
 
 use chrono::Utc;
 use gtk4::glib;
@@ -585,8 +584,13 @@ impl DevicesPage {
 
         self.empty_state.set_visible(false);
         self.list_box.set_visible(true);
-        let hotspot_config =
-            config::load_config(&config::hotspot_config_path()).unwrap_or_default();
+        let hotspot_config = match config::load_config_sync(&config::hotspot_config_path()) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Hotspot config load failed: {}", e);
+                config::HotspotConfig::default()
+            }
+        };
         let rule_map: HashMap<String, HotspotClientRule> = hotspot_config
             .client_rules
             .into_iter()
@@ -674,7 +678,7 @@ impl DevicesPage {
         let device_mac = device.mac.clone();
         let page = self.clone();
         let device_mac_for_status = device.mac.clone();
-        let currently_blocked = config::load_config(&config::hotspot_config_path())
+        let currently_blocked = config::load_config_sync(&config::hotspot_config_path())
             .ok()
             .and_then(|config| {
                 config
@@ -857,6 +861,7 @@ impl DevicesPage {
 
     async fn manage_device_rule(&self, device: ConnectedDevice) {
         let existing_rule = config::load_config(&config::hotspot_config_path())
+            .await
             .ok()
             .and_then(|config| {
                 config
@@ -889,8 +894,13 @@ impl DevicesPage {
     ) -> anyhow::Result<()> {
         let normalized_mac = config::normalize_mac_address(mac_address)
             .ok_or_else(|| anyhow::anyhow!("Invalid MAC address"))?;
-        let mut hotspot_config =
-            config::load_config(&config::hotspot_config_path()).unwrap_or_default();
+        let mut hotspot_config = match config::load_config(&config::hotspot_config_path()).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Hotspot config load failed: {}", e);
+                config::HotspotConfig::default()
+            }
+        };
         let existing_index = hotspot_config
             .client_rules
             .iter()
@@ -906,7 +916,7 @@ impl DevicesPage {
             hotspot_config.client_rules.push(rule);
         }
 
-        config::save_config(&config::hotspot_config_path(), &hotspot_config)?;
+        config::save_config(&config::hotspot_config_path(), &hotspot_config).await?;
         hotspot::sync_runtime_rules_from_disk().await.ok();
         Ok(())
     }
@@ -914,8 +924,13 @@ impl DevicesPage {
     async fn set_device_blocked(&self, mac_address: &str, blocked: bool) -> anyhow::Result<()> {
         let normalized_mac = config::normalize_mac_address(mac_address)
             .ok_or_else(|| anyhow::anyhow!("Invalid MAC address"))?;
-        let mut hotspot_config =
-            config::load_config(&config::hotspot_config_path()).unwrap_or_default();
+        let mut hotspot_config = match config::load_config(&config::hotspot_config_path()).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Hotspot config load failed: {}", e);
+                config::HotspotConfig::default()
+            }
+        };
         if let Some(rule) = hotspot_config
             .client_rules
             .iter_mut()
@@ -935,7 +950,7 @@ impl DevicesPage {
             });
         }
 
-        config::save_config(&config::hotspot_config_path(), &hotspot_config)?;
+        config::save_config(&config::hotspot_config_path(), &hotspot_config).await?;
         hotspot::sync_runtime_rules_from_disk().await.ok();
         Ok(())
     }
@@ -1021,7 +1036,13 @@ impl DevicesPage {
         );
         upload_row.add_suffix(&upload_spin);
 
-        let settings = config::load_app_settings(&config::app_settings_path()).unwrap_or_default();
+        let settings = match config::load_app_settings(&config::app_settings_path()).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Using default settings (config load failed): {}", e);
+                config::AppSettings::default()
+            }
+        };
         let quota_reset = match settings.hotspot_quota_reset_policy {
             config::HotspotQuotaResetPolicy::Never => "never reset automatically",
             config::HotspotQuotaResetPolicy::DailyMidnight => "reset daily at 00:00",

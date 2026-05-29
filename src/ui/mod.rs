@@ -1,5 +1,4 @@
-// File: mod.rs
-// Location: /src/ui/mod.rs
+// * ./src/ui/mod.rs
 
 pub mod common;
 pub mod devices_page;

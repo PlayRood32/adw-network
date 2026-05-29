@@ -1,3 +1,5 @@
+// * ./src/state.rs
+
 use crate::config::AppSettings;
 use crate::nm::{Connection, WifiNetwork};
 use crate::profiles::NetworkProfile;
@@ -46,7 +48,7 @@ struct VisibilityState {
     devices_visible: AtomicBool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct WifiSharedState {
     busy_count: AtomicU32,
     search_text: RwLock<String>,
@@ -56,21 +58,8 @@ struct WifiSharedState {
     connected_network: RwLock<Option<WifiNetwork>>,
     refresh_source: RwLock<Option<glib::SourceId>>,
     search_debounce_source: RwLock<Option<glib::SourceId>>,
-}
-
-impl Default for WifiSharedState {
-    fn default() -> Self {
-        Self {
-            busy_count: AtomicU32::new(0),
-            search_text: RwLock::new(String::new()),
-            all_networks: RwLock::new(Vec::new()),
-            saved_ssids: RwLock::new(HashSet::new()),
-            filter_state: RwLock::new(WifiFilterState::All),
-            connected_network: RwLock::new(None),
-            refresh_source: RwLock::new(None),
-            search_debounce_source: RwLock::new(None),
-        }
-    }
+    enabled: AtomicBool,
+    scan_complete: AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -86,6 +75,7 @@ struct HotspotSharedState {
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct DevicesSharedState {
     auto_refresh_active: AtomicBool,
     refresh_in_flight: AtomicBool,
@@ -222,6 +212,28 @@ impl AppState {
 
     pub fn wifi_busy_count(&self) -> u32 {
         self.wifi.busy_count.load(Ordering::Relaxed)
+    }
+
+    pub fn set_wifi_enabled(&self, value: bool) {
+        self.wifi.enabled.store(value, Ordering::Relaxed);
+    }
+
+    pub fn wifi_enabled(&self) -> bool {
+        self.wifi.enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_wifi_scan_complete(&self, value: bool) {
+        self.wifi.scan_complete.store(value, Ordering::Relaxed);
+    }
+
+    pub fn wifi_scan_complete(&self) -> bool {
+        self.wifi.scan_complete.load(Ordering::Relaxed)
+    }
+
+    pub fn wifi_scan_complete_with_no_networks(&self) -> bool {
+        self.wifi_scan_complete()
+            && self.wifi_enabled()
+            && self.wifi_all_networks().is_empty()
     }
 
     pub fn wifi_search_text(&self) -> String {

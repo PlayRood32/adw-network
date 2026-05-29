@@ -1,5 +1,4 @@
-// File: secrets.rs
-// Location: /src/secrets.rs
+// * ./src/secrets.rs
 
 use anyhow::{anyhow, Result};
 use keyring::Error as KeyringError;

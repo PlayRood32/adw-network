@@ -1,3 +1,5 @@
+// * ./src/ui/hotspot_page/actions.rs
+
 const BAND_24_GHZ_INDEX: u32 = 0;
 const BAND_5_GHZ_INDEX: u32 = 1;
 const BAND_AUTO_INDEX: u32 = 2;

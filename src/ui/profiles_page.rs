@@ -1,3 +1,5 @@
+// * ./src/ui/profiles_page.rs
+
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::{self as adw, prelude::*};
@@ -6,6 +8,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::nm::{
     self, Connection, OpenVpnConnectionConfig, VpnConnection, VpnKind, WireGuardConnectionConfig,
@@ -262,7 +265,7 @@ impl ProfilesPage {
         self.vpn_list_box.add_css_class("list-loading");
 
         let path = profiles::profiles_path();
-        match profiles::load_profiles(&path) {
+        match profiles::load_profiles(path).await {
             Ok(loaded) => {
                 if let Ok(mut profiles_state) = self.profiles.try_borrow_mut() {
                     *profiles_state = loaded.clone();
@@ -563,7 +566,7 @@ impl ProfilesPage {
                 }
                 current.push(profile);
                 let path = profiles::profiles_path();
-                if let Err(e) = profiles::save_profiles(&path, &current) {
+                if let Err(e) = profiles::save_profiles(path, &current).await {
                     log::error!("Failed to save profiles: {}", e);
                     self.show_toast(&format!("Failed to save profiles: {}", e));
                     return;
@@ -619,7 +622,7 @@ impl ProfilesPage {
                 }
 
                 let path = profiles::profiles_path();
-                if let Err(e) = profiles::save_profiles(&path, &current) {
+                if let Err(e) = profiles::save_profiles(path, &current).await {
                     log::error!("Failed to save profiles: {}", e);
                     self.show_toast(&format!("Failed to save profiles: {}", e));
                     return;
@@ -661,7 +664,7 @@ impl ProfilesPage {
         let mut current = self.profiles.borrow().clone();
         current.retain(|profile| profile.name != profile_name);
         let path = profiles::profiles_path();
-        if let Err(e) = profiles::save_profiles(&path, &current) {
+        if let Err(e) = profiles::save_profiles(path, &current).await {
             log::error!("Failed to save profiles: {}", e);
             self.show_toast(&format!("Failed to save profiles: {}", e));
             return;
@@ -806,10 +809,10 @@ impl ProfilesPage {
                                     let new_uuid = Uuid::parse_str(&new_uuid_text);
                                     if let (Ok(old_uuid), Ok(new_uuid)) = (old_uuid, new_uuid) {
                                         let _ = profiles::replace_connection_uuid_in_store(
-                                            &profiles::profiles_path(),
+                                            profiles::profiles_path(),
                                             old_uuid,
                                             new_uuid,
-                                        );
+                                        ).await;
                                     }
                                 }
                                 self.show_toast("WireGuard VPN updated");
@@ -1089,7 +1092,7 @@ impl ProfilesPage {
             public_key_entry.set_text(&existing.public_key);
             endpoint_entry.set_text(&existing.endpoint);
             allowed_ips_entry.set_text(&existing.allowed_ips.join(", "));
-            preshared_key_entry.set_text(existing.preshared_key.as_deref().unwrap_or(""));
+            preshared_key_entry.set_text(existing.preshared_key.as_ref().map(|k| k.as_str()).unwrap_or(""));
             keepalive_spin.set_value(existing.persistent_keepalive.unwrap_or_default() as f64);
             mtu_spin.set_value(existing.mtu.unwrap_or_default() as f64);
         } else {
@@ -1171,9 +1174,9 @@ impl ProfilesPage {
             interface_name,
             addresses,
             dns_servers: split_csv(dns_entry.text().as_str()),
-            private_key,
+            private_key: Zeroizing::new(private_key),
             public_key,
-            preshared_key: optional_text(preshared_key_entry.text().as_str()),
+            preshared_key: optional_text(preshared_key_entry.text().as_str()).map(Zeroizing::new),
             endpoint,
             allowed_ips,
             mtu,

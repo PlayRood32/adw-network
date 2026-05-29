@@ -1,7 +1,10 @@
+// * ./src/config.rs
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tokio::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HotspotConfig {
@@ -417,7 +420,15 @@ pub fn normalize_blocked_domain(value: &str) -> Option<String> {
     Some(normalized)
 }
 
-pub fn load_config(path: &std::path::Path) -> Result<HotspotConfig> {
+pub async fn load_config(path: &Path) -> Result<HotspotConfig> {
+    let content = fs::read_to_string(path).await?;
+    let mut config: HotspotConfig = serde_json::from_str(&content)?;
+    config.normalize();
+    config.validate()?;
+    Ok(config)
+}
+
+pub fn load_config_sync(path: &Path) -> Result<HotspotConfig> {
     let content = std::fs::read_to_string(path)?;
     let mut config: HotspotConfig = serde_json::from_str(&content)?;
     config.normalize();
@@ -425,7 +436,22 @@ pub fn load_config(path: &std::path::Path) -> Result<HotspotConfig> {
     Ok(config)
 }
 
-pub fn save_config(path: &std::path::Path, config: &HotspotConfig) -> Result<()> {
+pub async fn save_config(path: &Path, config: &HotspotConfig) -> Result<()> {
+    let mut config = config.clone();
+    config.normalize();
+    config.validate()?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let json = serde_json::to_string_pretty(&config)?;
+    fs::write(path, json).await?;
+
+    Ok(())
+}
+
+pub fn save_config_sync(path: &Path, config: &HotspotConfig) -> Result<()> {
     let mut config = config.clone();
     config.normalize();
     config.validate()?;
@@ -446,8 +472,8 @@ pub fn hotspot_config_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/adw-network-hotspot.json"))
 }
 
-pub fn load_app_settings_with_status(path: &std::path::Path) -> Result<(AppSettings, bool)> {
-    let content = std::fs::read_to_string(path)?;
+pub async fn load_app_settings_with_status(path: &Path) -> Result<(AppSettings, bool)> {
+    let content = fs::read_to_string(path).await?;
     let mut settings: AppSettings = serde_json::from_str(&content)?;
     let mut changed = false;
     // * Legacy plain-json storage now requires an explicit debug opt-in after upgrade.
@@ -462,11 +488,32 @@ pub fn load_app_settings_with_status(path: &std::path::Path) -> Result<(AppSetti
     Ok((settings, changed))
 }
 
-pub fn load_app_settings(path: &std::path::Path) -> Result<AppSettings> {
-    Ok(load_app_settings_with_status(path)?.0)
+pub async fn load_app_settings(path: &Path) -> Result<AppSettings> {
+    let (settings, _) = load_app_settings_with_status(path).await?;
+    Ok(settings)
 }
 
-pub fn save_app_settings(path: &std::path::Path, settings: &AppSettings) -> Result<()> {
+pub async fn save_app_settings(path: &Path, settings: &AppSettings) -> Result<()> {
+    let mut settings = settings.clone();
+    settings.normalize_module_layout();
+    settings.validate()?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let json = serde_json::to_string_pretty(&settings)?;
+    fs::write(path, json).await?;
+
+    Ok(())
+}
+
+pub fn load_app_settings_sync(path: &Path) -> Result<AppSettings> {
+    let (settings, _) = load_app_settings_with_status_sync(path)?;
+    Ok(settings)
+}
+
+pub fn save_app_settings_sync(path: &Path, settings: &AppSettings) -> Result<()> {
     let mut settings = settings.clone();
     settings.normalize_module_layout();
     settings.validate()?;
@@ -479,6 +526,21 @@ pub fn save_app_settings(path: &std::path::Path, settings: &AppSettings) -> Resu
     std::fs::write(path, json)?;
 
     Ok(())
+}
+
+pub fn load_app_settings_with_status_sync(path: &Path) -> Result<(AppSettings, bool)> {
+    let content = std::fs::read_to_string(path)?;
+    let mut settings: AppSettings = serde_json::from_str(&content)?;
+    let mut changed = false;
+    if settings.hotspot_password_storage == HotspotPasswordStorage::PlainJson
+        && !settings.plain_json_debug_opt_in
+    {
+        settings.hotspot_password_storage = HotspotPasswordStorage::Keyring;
+        changed = true;
+    }
+    changed |= settings.normalize_module_layout();
+    settings.validate()?;
+    Ok((settings, changed))
 }
 
 pub fn normalize_mac_address(value: &str) -> Option<String> {
@@ -563,8 +625,8 @@ mod tests {
     }
 
     #[test]
-    fn test_plain_json_migrates_to_keyring_without_debug_opt_in() {
-        let dir = tempdir().expect("temp dir");
+    fn test_plain_json_migrates_to_keyring_without_debug_opt_in() -> Result<()> {
+        let dir = tempdir()?;
         let path = dir.path().join("settings.json");
         let content = r#"{
   "color_scheme": "system",
@@ -573,14 +635,15 @@ mod tests {
   "icons_only_navigation": true,
   "hotspot_password_storage": "plain-json"
 }"#;
-        std::fs::write(&path, content).expect("write settings");
+        std::fs::write(&path, content)?;
 
-        let settings = load_app_settings(&path).expect("load settings");
+        let settings = load_app_settings_sync(&path)?;
         assert_eq!(
             settings.hotspot_password_storage,
             HotspotPasswordStorage::Keyring
         );
         assert!(!settings.plain_json_debug_opt_in);
+        Ok(())
     }
 
     #[test]

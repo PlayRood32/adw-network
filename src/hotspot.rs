@@ -1,3 +1,5 @@
+// * ./src/hotspot.rs
+
 use anyhow::{anyhow, Result};
 use std::time::Instant;
 use std::collections::HashMap;
@@ -9,6 +11,12 @@ use log::{debug, info, warn};
 
 pub const HOTSPOT_UNSUPPORTED_TOAST: &str = "This Wi-Fi adapter does not support hotspot mode";
 const HOTSPOT_NFT_TABLE: &str = "adw_network_hotspot";
+
+fn validate_interface_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 15
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HotspotAdvancedSupport {
@@ -251,19 +259,25 @@ pub async fn create_hotspot_on(config: &crate::config::HotspotConfig, iface: &st
     }
     debug!("upsert_hotspot_connection: {} ms", start.elapsed().as_millis());
 
-    // Activate connection if not already active; poll briefly for activation
+    // Activate connection if not already active; wait for NM's active-connection signal.
     let start = Instant::now();
     if !is_hotspot_active().await.unwrap_or(false) {
-        match tokio::time::timeout(Duration::from_secs(6), client.activate_connection_by_id("Hotspot", Some(iface))).await {
-            Ok(Ok(_active_path)) => {
-                // Poll for active state
-                let mut waited = 0u64;
-                while waited < 8000 {
-                    if is_hotspot_active().await.unwrap_or(false) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    waited += 250;
+        let activation = tokio::time::timeout(
+            Duration::from_secs(6),
+            client.activate_connection_by_id("Hotspot", Some(iface)),
+        )
+        .await;
+        match activation {
+            Ok(Ok(active_path)) => {
+                let activated = tokio::time::timeout(
+                    Duration::from_secs(8),
+                    client.wait_for_active_connection_activated(&active_path),
+                )
+                .await;
+                match activated {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => return Err(anyhow!("Timed out waiting for hotspot activation")),
                 }
             }
             Ok(Err(e)) => return Err(e),
@@ -343,61 +357,35 @@ pub async fn list_connected_clients() -> Result<Vec<HotspotClientDevice>> {
         .map(|entry| (entry.ip.clone(), entry))
         .collect();
 
-    let mut neigh = Command::new("ip");
-    neigh.args(["neigh", "show"]);
-    if let Some(iface) = hotspot_iface.as_deref() {
-        neigh.args(["dev", iface]);
-    }
+    let arp_entries = read_arp_table(hotspot_iface.as_deref()).await;
+    for (ip, mac) in arp_entries {
+        let Some(normalized_mac) = crate::config::normalize_mac_address(&mac) else {
+            continue;
+        };
 
-    match neigh.output().await {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let Some((ip, mac)) = parse_neighbor_client(line) else {
-                    continue;
-                };
-                let Some(normalized_mac) = crate::config::normalize_mac_address(mac) else {
-                    continue;
-                };
+        let lease_entry = lease_by_ip.get(&ip);
+        let hostname = match lease_entry.and_then(|entry| entry.hostname.clone()) {
+            Some(hostname) => Some(hostname),
+            None => reverse_lookup_hostname(&ip).await,
+        };
 
-                let lease_entry = lease_by_ip.get(ip);
-                let hostname = match lease_entry.and_then(|entry| entry.hostname.clone()) {
-                    Some(hostname) => Some(hostname),
-                    None => reverse_lookup_hostname(ip).await,
-                };
+        let entry = devices_by_mac
+            .entry(normalized_mac.clone())
+            .or_insert_with(|| HotspotClientDevice {
+                ip: ip.clone(),
+                mac: normalized_mac.clone(),
+                hostname: hostname.clone(),
+                lease_expiry: lease_entry.and_then(|entry| entry.expiry),
+            });
 
-                let entry = devices_by_mac
-                    .entry(normalized_mac.clone())
-                    .or_insert_with(|| HotspotClientDevice {
-                        ip: ip.to_string(),
-                        mac: normalized_mac.clone(),
-                        hostname: hostname.clone(),
-                        lease_expiry: lease_entry.and_then(|entry| entry.expiry),
-                    });
-
-                if entry.hostname.is_none() && hostname.is_some() {
-                    entry.hostname = hostname;
-                }
-                if entry.ip.contains(':') && !ip.contains(':') {
-                    entry.ip = ip.to_string();
-                }
-                if entry.lease_expiry.is_none() {
-                    entry.lease_expiry = lease_entry.and_then(|lease| lease.expiry);
-                }
-            }
+        if entry.hostname.is_none() && hostname.is_some() {
+            entry.hostname = hostname;
         }
-        Ok(output) => {
-            warn!(
-                "`ip neigh` returned non-zero status while loading hotspot clients: {}",
-                output
-                    .status
-                    .code()
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "signal".to_string())
-            );
+        if entry.ip.contains(':') && !ip.contains(':') {
+            entry.ip = ip;
         }
-        Err(e) => {
-            warn!("Failed to execute `ip neigh` for hotspot clients: {}", e);
+        if entry.lease_expiry.is_none() {
+            entry.lease_expiry = lease_entry.and_then(|lease| lease.expiry);
         }
     }
 
@@ -483,27 +471,12 @@ pub fn is_hotspot_mode_not_supported_error(text: &str) -> bool {
 }
 
 async fn get_connected_device_count_info_for_iface(iface: Option<&str>) -> Result<ConnectedClientCountInfo> {
-    let neighbor_lines = if let Some(iface) = iface {
-        match Command::new("ip").args(["neigh", "show", "dev", iface]).output().await {
-            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(ToString::to_string)
-                .collect(),
-            _ => Vec::new(),
-        }
-    } else {
-        collect_neighbor_lines().await
-    };
-
-    let neighbor_count = neighbor_lines
-        .iter()
-        .filter_map(|line| parse_neighbor_client(line))
-        .count();
+    let arp_entries = read_arp_table(iface).await;
+    let neighbor_count = arp_entries.len();
+    let neighbor_available = !arp_entries.is_empty();
 
     let lease_entries = crate::leases::load_lease_entries_with_stats().await.entries;
     let lease_count = lease_entries.len();
-
-    let neighbor_available = !neighbor_lines.is_empty();
     let lease_available = !lease_entries.is_empty();
 
     Ok(resolve_connected_client_count(neighbor_count, neighbor_available, lease_count, lease_available))
@@ -516,6 +489,42 @@ async fn command_available(name: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+async fn read_arp_table(iface: Option<&str>) -> Vec<(String, String)> {
+    let content = match tokio::fs::read_to_string("/proc/net/arp").await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to read /proc/net/arp: {}", e);
+            return Vec::new();
+        }
+    };
+
+    content
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 6 {
+                return None;
+            }
+            let ip = parts[0];
+            let hw_addr = parts[3];
+            let device = parts[5];
+
+            if let Some(iface) = iface {
+                if device != iface {
+                    return None;
+                }
+            }
+
+            if hw_addr == "00:00:00:00:00:00" {
+                return None;
+            }
+
+            Some((ip.to_string(), hw_addr.to_string()))
+        })
+        .collect()
 }
 
 fn apply_temporary_password_override(config: &crate::config::HotspotConfig) ->
@@ -569,8 +578,8 @@ async fn runtime_tick(force_apply: bool) -> Result<()> {
     };
 
     let settings =
-        crate::config::load_app_settings(&crate::config::app_settings_path()).unwrap_or_default();
-    let config = crate::config::load_config(&crate::config::hotspot_config_path())
+        crate::config::load_app_settings(&crate::config::app_settings_path()).await.unwrap_or_default();
+    let config = crate::config::load_config(&crate::config::hotspot_config_path()).await
         .map(|config| apply_temporary_password_override(&config))
         .unwrap_or_else(|_| crate::config::HotspotConfig::default());
     let clients = list_connected_clients().await.unwrap_or_default();
@@ -1008,7 +1017,7 @@ async fn read_runtime_counters() -> CounterSnapshot {
 
 async fn apply_runtime_rules(config: &crate::config::HotspotConfig, iface: &str) -> Result<()> {
     let settings =
-        crate::config::load_app_settings(&crate::config::app_settings_path()).unwrap_or_default();
+        crate::config::load_app_settings(&crate::config::app_settings_path()).await.unwrap_or_default();
     let state = load_runtime_state_or_default();
     let clients = list_connected_clients().await.unwrap_or_default();
     let plan = build_runtime_policy_plan(&config, &settings, &state, &clients).await;
@@ -1078,6 +1087,10 @@ async fn apply_nft_policies(
     iface: &str,
     plan: &RuntimePolicyPlan,
 ) -> Result<()> {
+    if !validate_interface_name(iface) {
+        return Err(anyhow!("Invalid interface name: {}", iface));
+    }
+
     let allowlist_macs: Vec<String> = config
         .client_rules
         .iter()
@@ -1184,6 +1197,10 @@ async fn apply_tc_limits(
     iface: &str,
     resolved_clients: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
+    if !validate_interface_name(iface) {
+        return Err(anyhow!("Invalid interface name: {}", iface));
+    }
+
     if config.download_limit_kbps.is_some()
         || config
             .client_rules
@@ -1388,22 +1405,9 @@ async fn resolved_client_ips(config: &crate::config::HotspotConfig) -> HashMap<S
         }
     }
 
-    for line in collect_neighbor_lines().await {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 5 || !parts.contains(&"lladdr") {
-            continue;
-        }
-        let Some(mac_idx) = parts.iter().position(|value| *value == "lladdr") else {
-            continue;
-        };
-        let Some(ip) = parts.first() else {
-            continue;
-        };
-        let Some(mac) = parts.get(mac_idx + 1) else {
-            continue;
-        };
-        if let Some(mac) = crate::config::normalize_mac_address(mac) {
-            map.entry(mac).or_insert_with(|| (*ip).to_string());
+    for (ip, mac) in read_arp_table(None).await {
+        if let Some(mac) = crate::config::normalize_mac_address(&mac) {
+            map.entry(mac).or_insert(ip);
         }
     }
 
@@ -1416,16 +1420,6 @@ async fn resolved_client_ips(config: &crate::config::HotspotConfig) -> HashMap<S
     map
 }
 
-async fn collect_neighbor_lines() -> Vec<String> {
-    match Command::new("ip").args(["neigh", "show"]).output().await {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(ToString::to_string)
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
 async fn reverse_lookup_hostname(ip: &str) -> Option<String> {
     let addr = ip.parse::<std::net::IpAddr>().ok()?;
     let ip_text = ip.to_string();
@@ -1435,23 +1429,6 @@ async fn reverse_lookup_hostname(ip: &str) -> Option<String> {
         .flatten()
         .map(|name| name.trim().trim_end_matches('.').to_string())
         .filter(|name| !name.is_empty() && *name != ip_text)
-}
-
-fn parse_neighbor_client(line: &str) -> Option<(&str, &str)> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 5 {
-        return None;
-    }
-    if parts.contains(&"FAILED") || parts.contains(&"INCOMPLETE") || parts.contains(&"NOARP") {
-        return None;
-    }
-    if crate::leases::is_filtered_client_ip(parts[0]) {
-        return None;
-    }
-
-    let idx = parts.iter().position(|value| *value == "lladdr")?;
-    let mac = parts.get(idx + 1)?;
-    Some((parts[0], mac))
 }
 
 async fn run_command(command: &str, args: &[&str]) -> Result<()> {

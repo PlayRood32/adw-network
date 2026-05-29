@@ -1,3 +1,5 @@
+// * ./src/modem_manager.rs
+
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use zbus::{Connection, Proxy};
@@ -140,9 +142,10 @@ pub async fn disconnect_mobile_data() -> Result<()> {
     };
 
     let proxy = client.proxy(modem_path, MM_MODEM_SIMPLE_IFACE).await?;
-    let bearer = modem
-        .primary_bearer
-        .unwrap_or_else(|| OwnedObjectPath::try_from("/").expect("root path is valid"));
+    let Some(bearer) = modem.primary_bearer.clone() else {
+        log::warn!("No primary bearer found — mobile data already disconnected");
+        return Ok(());
+    };
     let _: () = proxy
         .call("Disconnect", &(bearer))
         .await

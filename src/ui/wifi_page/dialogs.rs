@@ -1,5 +1,4 @@
-// File: dialogs.rs
-// Location: /src/ui/wifi_page/dialogs.rs
+// * ./src/ui/wifi_page/dialogs.rs
 
 pub(super) fn parse_entry_list(input: &str) -> Vec<String> {
     input

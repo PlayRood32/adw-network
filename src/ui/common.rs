@@ -1,3 +1,5 @@
+// * ./src/ui/common.rs
+
 use gtk4::prelude::*;
 use libadwaita::{self as adw, prelude::*};
 use std::time::Duration;
@@ -74,8 +76,6 @@ pub fn make_dialog_responsive(
     fallback_width: i32,
     fallback_height: i32,
 ) {
-    // * Keep inner dialogs responsive to the parent window size.
-    // Handles tablet modes by checking display size.
     dialog.set_follows_content_size(false);
     apply_dialog_size(dialog, parent_window, fallback_width, fallback_height);
 
@@ -86,6 +86,9 @@ pub fn make_dialog_responsive(
             return glib::ControlFlow::Break;
         };
         if !dialog.is_visible() {
+            return glib::ControlFlow::Break;
+        }
+        if dialog.child().is_none() {
             return glib::ControlFlow::Break;
         }
 
