@@ -1,39 +1,20 @@
-// File: qr_dialog.rs
-// Location: /src/qr_dialog.rs
+// * ./src/qr_dialog.rs
 
 use gdk_pixbuf::Pixbuf;
 use gtk4::prelude::*;
 use libadwaita::{self as adw, prelude::*};
-use std::time::Duration;
 
 use crate::qr;
 
 fn apply_dialog_size(
     dialog: &adw::Dialog,
-    parent_window: Option<&gtk4::Window>,
+    _parent_window: Option<&gtk4::Window>,
     fallback_width: i32,
     fallback_height: i32,
 ) {
-    let mut width = fallback_width.max(280);
-    let mut height = fallback_height.max(260);
-
-    if let Some(parent) = parent_window {
-        let parent_width = parent.width();
-        let parent_height = parent.height();
-        if parent_width > 0 {
-            let preferred_width = ((parent_width as f64) * 0.95).round() as i32;
-            let max_width = parent_width.saturating_sub(24).max(280);
-            width = preferred_width.clamp(280, max_width);
-        }
-        if parent_height > 0 {
-            let preferred_height = ((parent_height as f64) * 0.95).round() as i32;
-            let max_height = parent_height.saturating_sub(24).max(260);
-            height = preferred_height.clamp(260, max_height);
-        }
-    }
-
-    dialog.set_content_width(width);
-    dialog.set_content_height(height);
+    // * QR dialog is intentionally small — no need to track parent size
+    dialog.set_content_width(fallback_width.max(280));
+    dialog.set_content_height(fallback_height.max(260));
 }
 
 fn make_dialog_responsive(
@@ -42,24 +23,9 @@ fn make_dialog_responsive(
     fallback_width: i32,
     fallback_height: i32,
 ) {
-    // * Keep QR dialog responsive to the parent window size.
+    // * No resize loop — QR dialog stays fixed at its initial size
     dialog.set_follows_content_size(false);
     apply_dialog_size(dialog, parent_window, fallback_width, fallback_height);
-
-    let dialog_weak = dialog.downgrade();
-    let parent_weak = parent_window.map(|window| window.downgrade());
-    glib::timeout_add_local(Duration::from_millis(200), move || {
-        let Some(dialog) = dialog_weak.upgrade() else {
-            return glib::ControlFlow::Break;
-        };
-        if !dialog.is_visible() {
-            return glib::ControlFlow::Break;
-        }
-
-        let parent = parent_weak.as_ref().and_then(|window| window.upgrade());
-        apply_dialog_size(&dialog, parent.as_ref(), fallback_width, fallback_height);
-        glib::ControlFlow::Continue
-    });
 }
 
 pub async fn show_qr_dialog(
@@ -95,10 +61,10 @@ pub async fn show_qr_dialog(
                 width * 3,
             );
 
-            // Use requested logical image size to compute dialog content size.
-            let image_size = if size > 0 { size } else { 300 };
-            let fallback_w = (image_size + 120).max(280);
-            let fallback_h = (image_size + 120).max(260);
+            // * Fixed compact size — QR doesn't need to fill the whole window
+            let image_size = if size > 0 { size } else { 200 };
+            let fallback_w = (image_size + 64).clamp(280, 340);
+            let fallback_h = (image_size + 100).clamp(260, 380);
 
             let dialog = adw::Dialog::builder()
                 .title(format!("QR Code for {}", ssid))
@@ -113,9 +79,11 @@ pub async fn show_qr_dialog(
 
             let picture = gtk4::Picture::for_pixbuf(&pixbuf);
             picture.set_content_fit(gtk4::ContentFit::Contain);
-            // Allow QR content to shrink/grow but prefer centering and keeping dialog compact.
+            // * Fixed size so the QR doesn't stretch to fill the whole dialog
+            picture.set_size_request(image_size, image_size);
             picture.set_hexpand(false);
             picture.set_vexpand(false);
+            picture.set_halign(gtk4::Align::Center);
 
             let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
             content.set_margin_top(12);
