@@ -1,10 +1,10 @@
-// File: profiles.rs
-// Location: /src/profiles.rs
+// * ./src/profiles.rs
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use tokio::fs;
 use uuid::Uuid;
 
 use crate::nm::{self, Connection, NetworkManager};
@@ -24,7 +24,30 @@ pub fn profiles_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp/adw-network-profiles.json"))
 }
 
-pub fn load_profiles(path: &Path) -> Result<Vec<NetworkProfile>> {
+pub async fn load_profiles(path: PathBuf) -> Result<Vec<NetworkProfile>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(&path).await?;
+    let mut profiles: Vec<NetworkProfile> = serde_json::from_str(&content)?;
+    normalize_profiles(&mut profiles);
+    Ok(profiles)
+}
+
+pub async fn save_profiles(path: PathBuf, profiles: &[NetworkProfile]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let mut to_save = profiles.to_vec();
+    normalize_profiles(&mut to_save);
+    let json = serde_json::to_string_pretty(&to_save)?;
+    fs::write(&path, json).await?;
+    Ok(())
+}
+
+pub fn load_profiles_sync(path: &Path) -> Result<Vec<NetworkProfile>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -35,7 +58,7 @@ pub fn load_profiles(path: &Path) -> Result<Vec<NetworkProfile>> {
     Ok(profiles)
 }
 
-pub fn save_profiles(path: &Path, profiles: &[NetworkProfile]) -> Result<()> {
+pub fn save_profiles_sync(path: &Path, profiles: &[NetworkProfile]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -48,9 +71,9 @@ pub fn save_profiles(path: &Path, profiles: &[NetworkProfile]) -> Result<()> {
 }
 
 pub async fn activate_profile_by_name(path: &Path, profile_name: &str) -> Result<()> {
-    let mut profiles = load_profiles(path)?;
+    let mut profiles = load_profiles(path.to_path_buf()).await?;
     apply_profile_selection(&mut profiles, profile_name).await?;
-    save_profiles(path, &profiles)
+    save_profiles(path.to_path_buf(), &profiles).await
 }
 
 pub async fn apply_profile_selection(
@@ -163,15 +186,15 @@ pub fn replace_connection_uuid_references(
     changed
 }
 
-pub fn replace_connection_uuid_in_store(
-    path: &Path,
+pub async fn replace_connection_uuid_in_store(
+    path: PathBuf,
     old_uuid: Uuid,
     new_uuid: Uuid,
 ) -> Result<bool> {
-    let mut profiles = load_profiles(path)?;
+    let mut profiles = load_profiles(path.clone()).await?;
     let changed = replace_connection_uuid_references(&mut profiles, old_uuid, new_uuid);
     if changed {
-        save_profiles(path, &profiles)?;
+        save_profiles(path, &profiles).await?;
     }
     Ok(changed)
 }

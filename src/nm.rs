@@ -1,16 +1,29 @@
+-e // * ./src/nm.rs
+
 use anyhow::{anyhow, Result};
-use std::cmp::Ordering;
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use tokio::fs;
 use tokio::process::Command;
+use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
-use zvariant::{OwnedValue, Str};
+use zeroize::Zeroizing;
+use zvariant::{OwnedObjectPath, OwnedValue, Str};
 
 use crate::nm_dbus::{
     DbusAccessPoint, DbusActiveConnection, DbusConnectionProfile, NmDbusClient, SettingsMap,
-    NM_ACTIVE_CONNECTION_STATE_ACTIVATED, NM_DEVICE_TYPE_ETHERNET, NM_DEVICE_TYPE_WIFI,
+    NM_ACTIVE_CONNECTION_STATE_ACTIVATED, NM_ACTIVE_CONNECTION_STATE_ACTIVATING,
+    NM_ACTIVE_CONNECTION_STATE_DEACTIVATED, NM_ACTIVE_CONNECTION_STATE_DEACTIVATING,
+    NM_ACTIVE_CONNECTION_STATE_UNKNOWN, NM_CONNECTIVITY_FULL, NM_CONNECTIVITY_LIMITED,
+    NM_CONNECTIVITY_NONE, NM_CONNECTIVITY_PORTAL, NM_DEVICE_STATE_ACTIVATED,
+    NM_DEVICE_STATE_CONFIG, NM_DEVICE_STATE_DEACTIVATING, NM_DEVICE_STATE_DISCONNECTED,
+    NM_DEVICE_STATE_FAILED, NM_DEVICE_STATE_IP_CHECK, NM_DEVICE_STATE_IP_CONFIG,
+    NM_DEVICE_STATE_NEED_AUTH, NM_DEVICE_STATE_PREPARE, NM_DEVICE_STATE_SECONDARIES,
+    NM_DEVICE_STATE_UNAVAILABLE, NM_DEVICE_STATE_UNMANAGED, NM_DEVICE_STATE_UNKNOWN,
+    NM_DEVICE_TYPE_ETHERNET, NM_DEVICE_TYPE_LOOPBACK, NM_DEVICE_TYPE_WIFI,
 };
 
 pub const NMCLI_RETRIEVAL_TOAST: &str =
@@ -84,9 +97,9 @@ pub struct WireGuardConnectionConfig {
     pub interface_name: String,
     pub addresses: Vec<String>,
     pub dns_servers: Vec<String>,
-    pub private_key: String,
+    pub private_key: Zeroizing<String>,
     pub public_key: String,
-    pub preshared_key: Option<String>,
+    pub preshared_key: Option<Zeroizing<String>>,
     pub endpoint: String,
     pub allowed_ips: Vec<String>,
     pub mtu: Option<u32>,
@@ -112,6 +125,97 @@ pub async fn dbus_client() -> Result<NmDbusClient> {
         .map_err(|e| anyhow!("{} [{}]", NMCLI_RETRIEVAL_TOAST, e))
 }
 
+static SIGNAL_LISTENERS_INIT: AtomicBool = AtomicBool::new(false);
+static SIGNAL_DIRTY: AtomicBool = AtomicBool::new(false);
+static SIGNAL_POLLING_FALLBACK: AtomicBool = AtomicBool::new(false);
+
+pub fn signal_happened() -> bool {
+    SIGNAL_DIRTY.load(AtomicOrdering::Relaxed)
+}
+
+pub fn signal_ack() {
+    SIGNAL_DIRTY.store(false, AtomicOrdering::Relaxed);
+}
+
+pub fn signal_polling_fallback_active() -> bool {
+    SIGNAL_POLLING_FALLBACK.load(AtomicOrdering::Relaxed)
+}
+
+pub async fn init_signal_listeners() -> Result<()> {
+    if SIGNAL_LISTENERS_INIT
+        .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let init_result = async {
+        let client = dbus_client().await?;
+        let root_path = OwnedObjectPath::try_from("/")?;
+        let (state_tx, mut state_rx) = watch::channel(0u32);
+        let (added_tx, mut added_rx) = watch::channel(root_path.clone());
+        let (removed_tx, mut removed_rx) = watch::channel(root_path);
+
+        client.spawn_all_listeners(state_tx, added_tx, removed_tx).await?;
+
+        tokio::spawn(async move {
+            let _client = client;
+            loop {
+                tokio::select! {
+                    changed = state_rx.changed() => {
+                        if changed.is_err() {
+                            log::warn!("NM state signal listener stopped; polling fallback active");
+                            SIGNAL_LISTENERS_INIT.store(false, AtomicOrdering::Release);
+                            SIGNAL_POLLING_FALLBACK.store(true, AtomicOrdering::Relaxed);
+                            break;
+                        }
+                        SIGNAL_DIRTY.store(true, AtomicOrdering::Relaxed);
+                        log::debug!("NM signal: state changed");
+                    }
+                    changed = added_rx.changed() => {
+                        if changed.is_err() {
+                            log::warn!(
+                                "NM device-added signal listener stopped; polling fallback active"
+                            );
+                            SIGNAL_LISTENERS_INIT.store(false, AtomicOrdering::Release);
+                            SIGNAL_POLLING_FALLBACK.store(true, AtomicOrdering::Relaxed);
+                            break;
+                        }
+                        SIGNAL_DIRTY.store(true, AtomicOrdering::Relaxed);
+                        log::debug!("NM signal: device added");
+                    }
+                    changed = removed_rx.changed() => {
+                        if changed.is_err() {
+                            log::warn!(
+                                "NM device-removed signal listener stopped; polling fallback active"
+                            );
+                            SIGNAL_LISTENERS_INIT.store(false, AtomicOrdering::Release);
+                            SIGNAL_POLLING_FALLBACK.store(true, AtomicOrdering::Relaxed);
+                            break;
+                        }
+                        SIGNAL_DIRTY.store(true, AtomicOrdering::Relaxed);
+                        log::debug!("NM signal: device removed");
+                    }
+                }
+            }
+        });
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    if init_result.is_err() {
+        SIGNAL_LISTENERS_INIT.store(false, AtomicOrdering::Release);
+        SIGNAL_POLLING_FALLBACK.store(true, AtomicOrdering::Relaxed);
+        return init_result;
+    }
+
+    SIGNAL_POLLING_FALLBACK.store(false, AtomicOrdering::Relaxed);
+
+    log::info!("NM signal listeners initialized");
+    Ok(())
+}
+
 impl NetworkManager {
     pub async fn get_devices() -> Result<Vec<Device>> {
         let client = dbus_client().await?;
@@ -131,7 +235,7 @@ impl NetworkManager {
                 let device_type = match device.device_type {
                     NM_DEVICE_TYPE_ETHERNET => DeviceType::Ethernet,
                     NM_DEVICE_TYPE_WIFI => DeviceType::Wifi,
-                    14 => DeviceType::Loopback,
+                    NM_DEVICE_TYPE_LOOPBACK => DeviceType::Loopback,
                     other => DeviceType::Other(other.to_string()),
                 };
 
@@ -469,9 +573,9 @@ pub async fn list_supported_vpn_connections() -> Result<Vec<VpnConnection>> {
 
     out.sort_by(|a, b| {
         if a.active && !b.active {
-            Ordering::Less
+            CmpOrdering::Less
         } else if !a.active && b.active {
-            Ordering::Greater
+            CmpOrdering::Greater
         } else {
             a.name.to_lowercase().cmp(&b.name.to_lowercase())
         }
@@ -481,9 +585,11 @@ pub async fn list_supported_vpn_connections() -> Result<Vec<VpnConnection>> {
 }
 
 pub async fn activate_vpn_connection(uuid: &str) -> Result<()> {
+    // * Use activate_vpn_connection_by_uuid — VPNs need "/" as device path,
+    // * not an actual ethernet/wifi device (causes UnknownDevice error otherwise)
     dbus_client()
         .await?
-        .activate_connection_by_uuid(uuid, None)
+        .activate_vpn_connection_by_uuid(uuid)
         .await?;
     Ok(())
 }
@@ -523,12 +629,14 @@ pub async fn get_wireguard_connection_config(uuid: &str) -> Result<WireGuardConn
         interface_name,
         addresses,
         dns_servers,
-        private_key: profile
-            .settings
-            .get("wireguard")
-            .and_then(|section| section.get("private-key"))
-            .and_then(value_string)
-            .unwrap_or_default(),
+        private_key: Zeroizing::new(
+            profile
+                .settings
+                .get("wireguard")
+                .and_then(|section| section.get("private-key"))
+                .and_then(value_string)
+                .unwrap_or_default(),
+        ),
         mtu: profile
             .settings
             .get("wireguard")
@@ -546,7 +654,7 @@ pub async fn get_wireguard_connection_config(uuid: &str) -> Result<WireGuardConn
             .get("endpoint")
             .and_then(value_string)
             .unwrap_or_default();
-        config.preshared_key = section.get("preshared-key").and_then(value_string);
+        config.preshared_key = section.get("preshared-key").and_then(value_string).map(Zeroizing::new);
         config.persistent_keepalive = section.get("persistent-keepalive").and_then(value_u32);
         config.allowed_ips = section
             .get("allowed-ips")
@@ -645,9 +753,31 @@ pub async fn update_openvpn_connection(uuid: &str, config: &OpenVpnConnectionCon
     let ipv6 = settings.entry("ipv6".to_string()).or_default();
     ipv6.insert("method".to_string(), owned_string("ignore"));
 
+    // * Check if this VPN is currently active before updating — we'll reconnect after
+    let was_active = client
+        .list_active_connections()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .any(|c| c.uuid == uuid);
+
+    // ! Deactivate before updating — NM rejects settings changes on live VPN connections
+    if was_active {
+        log::info!("Deactivating VPN {} before settings update", uuid);
+        client.deactivate_connection_by_uuid(uuid).await?;
+    }
+
     client
         .update_connection_settings(&profile.path, &settings)
-        .await
+        .await?;
+
+    // * Reconnect using VPN-safe activation (device path = "/")
+    if was_active {
+        log::info!("Reconnecting VPN {} after settings update", uuid);
+        client.activate_vpn_connection_path(&profile.path).await?;
+    }
+
+    Ok(())
 }
 
 pub async fn create_wireguard_connection(config: &WireGuardConnectionConfig) -> Result<String> {
@@ -703,10 +833,10 @@ pub async fn get_primary_connected_device() -> Result<Option<String>> {
 pub async fn get_internet_connectivity() -> Result<InternetConnectivity> {
     let state = dbus_client().await?.get_connectivity_state().await?;
     Ok(match state {
-        1 => InternetConnectivity::NoInternet,
-        2 => InternetConnectivity::Portal,
-        3 => InternetConnectivity::Limited,
-        4 => InternetConnectivity::Full,
+        NM_CONNECTIVITY_NONE => InternetConnectivity::NoInternet,
+        NM_CONNECTIVITY_PORTAL => InternetConnectivity::Portal,
+        NM_CONNECTIVITY_LIMITED => InternetConnectivity::Limited,
+        NM_CONNECTIVITY_FULL => InternetConnectivity::Full,
         _ => InternetConnectivity::Unknown,
     })
 }
@@ -849,29 +979,30 @@ pub fn is_vpn_plugin_missing_error(message: &str) -> bool {
 
 fn nm_device_state_label(state: u32) -> &'static str {
     match state {
-        10 => "unmanaged",
-        20 => "unavailable",
-        30 => "disconnected",
-        40 => "prepare",
-        50 => "config",
-        60 => "need-auth",
-        70 => "ip-config",
-        80 => "ip-check",
-        90 => "secondaries",
-        100 => "activated",
-        110 => "deactivating",
-        120 => "failed",
+        NM_DEVICE_STATE_UNKNOWN => "unknown",
+        NM_DEVICE_STATE_UNMANAGED => "unmanaged",
+        NM_DEVICE_STATE_UNAVAILABLE => "unavailable",
+        NM_DEVICE_STATE_DISCONNECTED => "disconnected",
+        NM_DEVICE_STATE_PREPARE => "prepare",
+        NM_DEVICE_STATE_CONFIG => "config",
+        NM_DEVICE_STATE_NEED_AUTH => "need-auth",
+        NM_DEVICE_STATE_IP_CONFIG => "ip-config",
+        NM_DEVICE_STATE_IP_CHECK => "ip-check",
+        NM_DEVICE_STATE_SECONDARIES => "secondaries",
+        NM_DEVICE_STATE_ACTIVATED => "activated",
+        NM_DEVICE_STATE_DEACTIVATING => "deactivating",
+        NM_DEVICE_STATE_FAILED => "failed",
         _ => "unknown",
     }
 }
 
 fn active_connection_state_label(state: u32) -> &'static str {
     match state {
-        0 => "unknown",
-        1 => "activating",
-        2 => "activated",
-        3 => "deactivating",
-        4 => "deactivated",
+        NM_ACTIVE_CONNECTION_STATE_UNKNOWN => "unknown",
+        NM_ACTIVE_CONNECTION_STATE_ACTIVATING => "activating",
+        NM_ACTIVE_CONNECTION_STATE_ACTIVATED => "activated",
+        NM_ACTIVE_CONNECTION_STATE_DEACTIVATING => "deactivating",
+        NM_ACTIVE_CONNECTION_STATE_DEACTIVATED => "deactivated",
         _ => "unknown",
     }
 }
@@ -968,26 +1099,26 @@ async fn connect_wifi_network(
     Ok(ConnectStatus::Connected)
 }
 
-fn compare_wifi_networks(a: &WifiNetwork, b: &WifiNetwork) -> Ordering {
+fn compare_wifi_networks(a: &WifiNetwork, b: &WifiNetwork) -> CmpOrdering {
     match (a.connected, b.connected) {
-        (true, false) => return Ordering::Less,
-        (false, true) => return Ordering::Greater,
+        (true, false) => return CmpOrdering::Less,
+        (false, true) => return CmpOrdering::Greater,
         _ => {}
     }
 
     let ssid_cmp = a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase());
-    if ssid_cmp != Ordering::Equal {
+    if ssid_cmp != CmpOrdering::Equal {
         return ssid_cmp;
     }
 
     let band_cmp = wifi_band_sort_key(&a.band).cmp(&wifi_band_sort_key(&b.band));
-    if band_cmp != Ordering::Equal {
+    if band_cmp != CmpOrdering::Equal {
         return band_cmp;
     }
 
     let security_cmp =
         wifi_security_sort_key(&a.security_type).cmp(&wifi_security_sort_key(&b.security_type));
-    if security_cmp != Ordering::Equal {
+    if security_cmp != CmpOrdering::Equal {
         return security_cmp;
     }
 
@@ -1270,11 +1401,11 @@ fn build_wireguard_config_text(config: &WireGuardConnectionConfig) -> String {
     lines.push(format!("PublicKey = {}", config.public_key.trim()));
     if let Some(preshared_key) = config
         .preshared_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .as_ref()
+        .map(|k| k.as_str())
+        .filter(|value| !value.trim().is_empty())
     {
-        lines.push(format!("PresharedKey = {}", preshared_key));
+        lines.push(format!("PresharedKey = {}", preshared_key.trim()));
     }
     lines.push(format!("Endpoint = {}", config.endpoint.trim()));
     if !config.allowed_ips.is_empty() {
@@ -1284,7 +1415,8 @@ fn build_wireguard_config_text(config: &WireGuardConnectionConfig) -> String {
         lines.push(format!("PersistentKeepalive = {}", keepalive));
     }
 
-    lines.join("\n")
+    lines.join("
+")
 }
 
 fn build_temp_wireguard_path(name: &str) -> std::path::PathBuf {
@@ -1363,4 +1495,60 @@ pub async fn get_active_hotspot_connection() -> Result<Option<DbusActiveConnecti
 
 pub async fn is_hotspot_active() -> Result<bool> {
     Ok(get_active_hotspot_connection().await?.is_some())
+}
+
+// * Retrieves the saved wifi password for an SSID using nmcli with sudo.
+// * Requires the user's sudo password — we pass it via stdin with -S flag.
+pub async fn get_wifi_password_with_sudo(ssid: &str, sudo_password: &str) -> Result<String> {
+    use tokio::io::AsyncWriteExt;
+    use tokio::process::Command;
+
+    let mut child = Command::new("sudo")
+        .args([
+            "-S",
+            "nmcli",
+            "--show-secrets",
+            "connection",
+            "show",
+            ssid,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    // Feed sudo password on stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(format!("{}
+", sudo_password).as_bytes())
+            .await?;
+    }
+
+    let output = child.wait_with_output().await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("incorrect password") || stderr.contains("Sorry") {
+            return Err(anyhow!("Incorrect sudo password"));
+        }
+        return Err(anyhow!("nmcli failed: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        // nmcli output: "802-11-wireless-security.psk:             <password>"
+        if line.contains("802-11-wireless-security.psk:") {
+            let password = line
+                .splitn(2, ':')
+                .nth(1)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            if !password.is_empty() && password != "--" {
+                return Ok(password);
+            }
+        }
+    }
+
+    Err(anyhow!("Password not found for SSID: {}", ssid))
 }

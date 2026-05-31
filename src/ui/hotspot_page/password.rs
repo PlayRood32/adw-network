@@ -1,5 +1,4 @@
-// File: password.rs
-// Location: /src/ui/hotspot_page/password.rs
+// * ./src/ui/hotspot_page/password.rs
 
 use gtk4::prelude::*;
 use rand::seq::SliceRandom;

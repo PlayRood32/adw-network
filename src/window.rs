@@ -1,6 +1,4 @@
-// File: window.rs
-// Location: /src/window.rs
-
+// * ./src/window.rs
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -31,7 +29,8 @@ impl Default for AppPrefs {
         Self {
             auto_scan: true,
             expand_connected_details: false,
-            icons_only_navigation: true,
+            // ? Changed from true — first-time users need labels to understand navigation
+            icons_only_navigation: false,
         }
     }
 }
@@ -250,6 +249,27 @@ impl ModuleKind {
     }
 }
 
+// * Wraps all the args that show_settings_window needs — replaces the 18-arg signature
+struct SettingsWindowContext {
+    window: adw::ApplicationWindow,
+    prefs: Rc<RefCell<AppPrefs>>,
+    app_state: AppState,
+    wifi_page: WifiPage,
+    wifi_stack_page: adw::ViewStackPage,
+    ethernet_stack_page: adw::ViewStackPage,
+    hotspot_stack_page: adw::ViewStackPage,
+    devices_stack_page: adw::ViewStackPage,
+    profiles_stack_page: adw::ViewStackPage,
+    no_network_page: adw::ViewStackPage,
+    view_switcher: adw::ViewSwitcher,
+    module_layout_state: Rc<RefCell<ModuleLayoutState>>,
+    module_availability_state: Rc<RefCell<ModuleAvailability>>,
+    view_stack: adw::ViewStack,
+    edit_modules_box: gtk4::Box,
+    add_module_btn: gtk4::Button,
+    add_module_popover: gtk4::Popover,
+}
+
 pub struct AdwNetworkWindow {
     pub window: adw::ApplicationWindow,
 }
@@ -261,10 +281,10 @@ impl AdwNetworkWindow {
 
         let settings_path = config::app_settings_path();
         let (app_settings, settings_repaired) =
-            config::load_app_settings_with_status(&settings_path)
+            config::load_app_settings_with_status_sync(&settings_path)
                 .unwrap_or_else(|_| (config::AppSettings::default(), false));
         if settings_repaired {
-            if let Err(e) = config::save_app_settings(&settings_path, &app_settings) {
+            if let Err(e) = config::save_app_settings_sync(&settings_path, &app_settings) {
                 log::warn!("Failed to persist repaired app settings: {}", e);
             }
         }
@@ -364,13 +384,64 @@ impl AdwNetworkWindow {
             }
         }
 
-        let wifi_stack_page = wifi_stack_page.expect("view stack must contain Wi-Fi page");
-        let ethernet_stack_page =
-            ethernet_stack_page.expect("view stack must contain Ethernet page");
-        let hotspot_stack_page = hotspot_stack_page.expect("view stack must contain Hotspot page");
-        let devices_stack_page = devices_stack_page.expect("view stack must contain Devices page");
-        let profiles_stack_page =
-            profiles_stack_page.expect("view stack must contain Profiles page");
+        let no_network_page_widget = adw::StatusPage::builder()
+            .title("No Networks Available")
+            .description("No network hardware detected. Check your hardware or restart NetworkManager.")
+            .icon_name(icon_name(
+                "network-offline-symbolic",
+                &["network-offline", "network-wireless-offline-symbolic"][..],
+            ))
+            .build();
+        let no_network_action = gtk4::Button::builder()
+            .label("Open System Settings")
+            .css_classes(vec!["suggested-action".to_string()])
+            .build();
+        no_network_action.set_visible(false);
+        let no_network_action_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+        no_network_action_box.set_halign(gtk4::Align::Center);
+        no_network_action_box.append(&no_network_action);
+        let no_network_page_box = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+        no_network_page_widget.set_vexpand(true);
+        no_network_page_box.append(&no_network_page_widget);
+        no_network_page_box.append(&no_network_action_box);
+        let no_network_page = view_stack.add_titled(
+            &no_network_page_box,
+            Some("no-network"),
+            "No Network",
+        );
+        no_network_page.set_visible(false);
+
+        no_network_action.connect_clicked(move |_| {
+            let _ = std::process::Command::new("gnome-control-center")
+                .arg("network")
+                .spawn();
+        });
+
+        let wifi_stack_page = wifi_stack_page.unwrap_or_else(|| {
+            let p = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            p.set_visible(false);
+            view_stack.add_titled(&p, Some("wifi"), "")
+        });
+        let ethernet_stack_page = ethernet_stack_page.unwrap_or_else(|| {
+            let p = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            p.set_visible(false);
+            view_stack.add_titled(&p, Some("ethernet"), "")
+        });
+        let hotspot_stack_page = hotspot_stack_page.unwrap_or_else(|| {
+            let p = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            p.set_visible(false);
+            view_stack.add_titled(&p, Some("hotspot"), "")
+        });
+        let devices_stack_page = devices_stack_page.unwrap_or_else(|| {
+            let p = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            p.set_visible(false);
+            view_stack.add_titled(&p, Some("devices"), "")
+        });
+        let profiles_stack_page = profiles_stack_page.unwrap_or_else(|| {
+            let p = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            p.set_visible(false);
+            view_stack.add_titled(&p, Some("profiles"), "")
+        });
 
         let view_switcher = adw::ViewSwitcher::builder()
             .stack(&view_stack)
@@ -483,6 +554,7 @@ impl AdwNetworkWindow {
         });
         view_switcher.add_controller(mod_menu_click);
 
+        let no_network_page_ref = no_network_page.clone();
         let wifi_page_ref = wifi_stack_page.clone();
         let hotspot_page_ref = hotspot_stack_page.clone();
         let ethernet_page_ref = ethernet_stack_page.clone();
@@ -495,7 +567,10 @@ impl AdwNetworkWindow {
         let reset_layout_btn_for_visibility = reset_layout_btn.clone();
         let add_module_btn_for_visibility = add_module_btn.clone();
         let add_module_popover_for_visibility = add_module_popover.clone();
+        let no_network_widget_for_visibility = no_network_page_widget.clone();
+        let no_network_action_for_visibility = no_network_action.clone();
         let update_visibility = move || {
+            let no_network_page_ref = no_network_page_ref.clone();
             let wifi_page_ref = wifi_page_ref.clone();
             let hotspot_page_ref = hotspot_page_ref.clone();
             let ethernet_page_ref = ethernet_page_ref.clone();
@@ -508,6 +583,8 @@ impl AdwNetworkWindow {
             let reset_layout_btn_for_visibility = reset_layout_btn_for_visibility.clone();
             let add_module_btn_for_visibility = add_module_btn_for_visibility.clone();
             let add_module_popover_for_visibility = add_module_popover_for_visibility.clone();
+            let no_network_widget_for_visibility = no_network_widget_for_visibility.clone();
+            let no_network_action_for_visibility = no_network_action_for_visibility.clone();
 
             glib::spawn_future_local(async move {
                 let availability = Self::detect_module_availability().await;
@@ -517,24 +594,53 @@ impl AdwNetworkWindow {
 
                 let layout = module_layout_for_visibility.borrow().clone();
                 let resolved = layout.resolve_visible(availability);
-                Self::apply_module_order(
-                    &view_stack_ref,
-                    &wifi_page_ref,
-                    &ethernet_page_ref,
-                    &hotspot_page_ref,
-                    &devices_page_ref,
-                    &profiles_page_ref,
-                    &layout.order,
-                );
-                Self::apply_module_visibility(
-                    &wifi_page_ref,
-                    &ethernet_page_ref,
-                    &hotspot_page_ref,
-                    &devices_page_ref,
-                    &profiles_page_ref,
-                    &view_stack_ref,
-                    resolved,
-                );
+
+                // Show global empty page when no hardware modules available
+                if !resolved.any_visible() {
+                    no_network_widget_for_visibility.set_title("No Networks Available");
+                    no_network_widget_for_visibility.set_description(Some(
+                        "No network hardware detected. Check your hardware or restart NetworkManager.",
+                    ));
+                    no_network_widget_for_visibility.set_icon_name(Some(icon_name(
+                        "network-offline-symbolic",
+                        &["network-offline", "network-wireless-offline-symbolic"][..],
+                    )));
+                    no_network_action_for_visibility.set_visible(false);
+
+                    Self::apply_module_visibility(
+                        &wifi_page_ref,
+                        &ethernet_page_ref,
+                        &hotspot_page_ref,
+                        &devices_page_ref,
+                        &profiles_page_ref,
+                        &no_network_page_ref,
+                        &view_stack_ref,
+                        resolved,
+                    );
+                    // apply_module_visibility hides all modules and shows no_network_page
+                    // when any_visible is false, so we don't need to manually switch children.
+                } else {
+                    no_network_action_for_visibility.set_visible(false);
+                    Self::apply_module_order(
+                        &view_stack_ref,
+                        &wifi_page_ref,
+                        &ethernet_page_ref,
+                        &hotspot_page_ref,
+                        &devices_page_ref,
+                        &profiles_page_ref,
+                        &layout.order,
+                    );
+                    Self::apply_module_visibility(
+                        &wifi_page_ref,
+                        &ethernet_page_ref,
+                        &hotspot_page_ref,
+                        &devices_page_ref,
+                        &profiles_page_ref,
+                        &no_network_page_ref,
+                        &view_stack_ref,
+                        resolved,
+                    );
+                }
                 Self::render_inline_module_editor(
                     &edit_modules_box_for_visibility,
                     &add_module_btn_for_visibility,
@@ -547,6 +653,7 @@ impl AdwNetworkWindow {
                     &hotspot_page_ref,
                     &devices_page_ref,
                     &profiles_page_ref,
+                    &no_network_page_ref,
                 );
 
                 let layout = module_layout_for_visibility.borrow().clone();
@@ -555,6 +662,7 @@ impl AdwNetworkWindow {
             });
         };
 
+        let no_network_page_for_reset = no_network_page.clone();
         let module_layout_for_reset = module_layout_state.clone();
         let module_availability_for_reset = module_availability_state.clone();
         let view_stack_for_reset = view_stack.clone();
@@ -567,6 +675,7 @@ impl AdwNetworkWindow {
         let add_module_btn_for_reset = add_module_btn.clone();
         let add_module_popover_for_reset = add_module_popover.clone();
         reset_layout_btn.connect_clicked(move |_| {
+            let no_network_page_for_reset = no_network_page_for_reset.clone();
             let module_layout_for_reset = module_layout_for_reset.clone();
             let module_availability_for_reset = module_availability_for_reset.clone();
             let view_stack_for_reset = view_stack_for_reset.clone();
@@ -606,6 +715,7 @@ impl AdwNetworkWindow {
                         &hotspot_page_for_reset,
                         &devices_page_for_reset,
                         &profiles_page_for_reset,
+                        &no_network_page_for_reset,
                         &view_stack_for_reset,
                         resolved,
                     );
@@ -625,6 +735,7 @@ impl AdwNetworkWindow {
                         &hotspot_page_for_reset,
                         &devices_page_for_reset,
                         &profiles_page_for_reset,
+                        &no_network_page_for_reset,
                     );
                 }
             });
@@ -722,6 +833,8 @@ impl AdwNetworkWindow {
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&view_stack));
+        let root_toast_overlay = adw::ToastOverlay::new();
+        root_toast_overlay.set_child(Some(&toolbar_view));
 
         // Periodically update the global connection status
         let status_icon_for_updates = status_icon.clone();
@@ -739,6 +852,7 @@ impl AdwNetworkWindow {
 
                 if hotspot::is_hotspot_active().await.unwrap_or(false) {
                     let ssid = config::load_config(&config::hotspot_config_path())
+                        .await
                         .ok()
                         .map(|c| c.ssid);
                     status_icon.set_icon_name(Some(icon_name(
@@ -927,10 +1041,58 @@ impl AdwNetworkWindow {
             .application(app)
             .title("Adwaita Network")
             .resizable(true)
-            .content(&toolbar_view)
+            .content(&root_toast_overlay)
             .default_width(700)
             .default_height(520)
             .build();
+
+        const SIGNAL_FALLBACK_TOAST: &str =
+            "Network change notifications unavailable; using periodic refresh";
+
+        let signal_fallback_toast_shown = Rc::new(Cell::new(false));
+        if nm::signal_polling_fallback_active() {
+            signal_fallback_toast_shown.set(true);
+            let root_toast_overlay = root_toast_overlay.clone();
+            glib::idle_add_local_once(move || {
+                common::show_toast(&root_toast_overlay, SIGNAL_FALLBACK_TOAST);
+            });
+        }
+        let signal_fallback_toast_shown_for_timer = signal_fallback_toast_shown.clone();
+        let root_toast_overlay_for_signal_fallback = root_toast_overlay.clone();
+        glib::timeout_add_seconds_local(5, move || {
+            if signal_fallback_toast_shown_for_timer.get() {
+                return glib::ControlFlow::Break;
+            }
+            if nm::signal_polling_fallback_active() {
+                signal_fallback_toast_shown_for_timer.set(true);
+                common::show_toast(
+                    &root_toast_overlay_for_signal_fallback,
+                    SIGNAL_FALLBACK_TOAST,
+                );
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+
+        let condition = adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            400.0,
+            adw::LengthUnit::Px,
+        );
+        let breakpoint = adw::Breakpoint::new(condition);
+        let view_switcher_for_bp = view_switcher.clone();
+        let speed_box_for_bp = speed_box.clone();
+        breakpoint.connect_apply(move |_| {
+            view_switcher_for_bp.set_policy(adw::ViewSwitcherPolicy::Narrow);
+            speed_box_for_bp.set_visible(false);
+        });
+        let view_switcher_for_bp = view_switcher.clone();
+        let speed_box_for_bp = speed_box.clone();
+        breakpoint.connect_unapply(move |_| {
+            view_switcher_for_bp.set_policy(adw::ViewSwitcherPolicy::Wide);
+            speed_box_for_bp.set_visible(true);
+        });
+        window.add_breakpoint(breakpoint);
 
         let about_action = gio::SimpleAction::new("about", None);
         let window_weak = window.downgrade();
@@ -941,6 +1103,7 @@ impl AdwNetworkWindow {
         });
         app.add_action(&about_action);
 
+        let no_network_page_for_settings = no_network_page.clone();
         let settings_action = gio::SimpleAction::new("settings", None);
         let window_weak = window.downgrade();
         let prefs_for_settings = prefs.clone();
@@ -954,24 +1117,26 @@ impl AdwNetworkWindow {
         let view_switcher_for_settings = view_switcher.clone();
         settings_action.connect_activate(move |_, _| {
             if let Some(window) = window_weak.upgrade() {
-                Self::show_settings_window(
-                    &window,
-                    prefs_for_settings.clone(),
-                    app_state_for_settings.clone(),
-                    wifi_for_settings.clone(),
-                    wifi_page_for_settings.clone(),
-                    ethernet_page_for_settings.clone(),
-                    hotspot_page_for_settings.clone(),
-                    devices_page_for_settings.clone(),
-                    profiles_page_for_settings.clone(),
-                    view_switcher_for_settings.clone(),
-                    module_layout_state.clone(),
-                    module_availability_state.clone(),
-                    view_stack.clone(),
-                    edit_modules_box.clone(),
-                    add_module_btn.clone(),
-                    add_module_popover.clone(),
-                );
+                // * Use SettingsWindowContext to avoid 18-arg signature
+                Self::show_settings_window(SettingsWindowContext {
+                    window,
+                    prefs: prefs_for_settings.clone(),
+                    app_state: app_state_for_settings.clone(),
+                    wifi_page: wifi_for_settings.clone(),
+                    wifi_stack_page: wifi_page_for_settings.clone(),
+                    ethernet_stack_page: ethernet_page_for_settings.clone(),
+                    hotspot_stack_page: hotspot_page_for_settings.clone(),
+                    devices_stack_page: devices_page_for_settings.clone(),
+                    profiles_stack_page: profiles_page_for_settings.clone(),
+                    no_network_page: no_network_page_for_settings.clone(),
+                    view_switcher: view_switcher_for_settings.clone(),
+                    module_layout_state: module_layout_state.clone(),
+                    module_availability_state: module_availability_state.clone(),
+                    view_stack: view_stack.clone(),
+                    edit_modules_box: edit_modules_box.clone(),
+                    add_module_btn: add_module_btn.clone(),
+                    add_module_popover: add_module_popover.clone(),
+                });
             }
         });
         app.add_action(&settings_action);
@@ -994,31 +1159,34 @@ impl AdwNetworkWindow {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn show_settings_window(
-        window: &adw::ApplicationWindow,
-        prefs: Rc<RefCell<AppPrefs>>,
-        app_state: AppState,
-        wifi_page: WifiPage,
-        wifi_stack_page: adw::ViewStackPage,
-        ethernet_stack_page: adw::ViewStackPage,
-        hotspot_stack_page: adw::ViewStackPage,
-        devices_stack_page: adw::ViewStackPage,
-        profiles_stack_page: adw::ViewStackPage,
-        view_switcher: adw::ViewSwitcher,
-        module_layout_state: Rc<RefCell<ModuleLayoutState>>,
-        module_availability_state: Rc<RefCell<ModuleAvailability>>,
-        view_stack: adw::ViewStack,
-        edit_modules_box: gtk4::Box,
-        add_module_btn: gtk4::Button,
-        add_module_popover: gtk4::Popover,
-    ) {
+    fn show_settings_window(ctx: SettingsWindowContext) {
+        let SettingsWindowContext {
+            window,
+            prefs,
+            app_state,
+            wifi_page,
+            wifi_stack_page,
+            ethernet_stack_page,
+            hotspot_stack_page,
+            devices_stack_page,
+            profiles_stack_page,
+            no_network_page,
+            view_switcher,
+            module_layout_state,
+            module_availability_state,
+            view_stack,
+            edit_modules_box,
+            add_module_btn,
+            add_module_popover,
+        } = ctx;
+        let window = &window;
         let style_manager = adw::StyleManager::default();
         let settings_path = config::app_settings_path();
         let (loaded_settings, repaired_settings) =
-            config::load_app_settings_with_status(&settings_path)
+            config::load_app_settings_with_status_sync(&settings_path)
                 .unwrap_or_else(|_| (config::AppSettings::default(), false));
         if repaired_settings {
-            if let Err(e) = config::save_app_settings(&settings_path, &loaded_settings) {
+            if let Err(e) = config::save_app_settings_sync(&settings_path, &loaded_settings) {
                 log::warn!("Failed to persist repaired app settings: {}", e);
             }
         }
@@ -1046,15 +1214,10 @@ impl AdwNetworkWindow {
             let scheme = Self::color_scheme_from_selection(row.selected());
             style_manager_for_theme.set_color_scheme(scheme);
 
-            debug_assert!(
-                settings_state_for_theme.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: settings_state_for_theme"
-            );
+            if settings_state_for_theme.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_theme"); }
             if let Ok(mut settings) = settings_state_for_theme.try_borrow_mut() {
                 settings.color_scheme = Self::setting_from_selection(row.selected()).to_string();
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
             }
@@ -1137,18 +1300,11 @@ impl AdwNetworkWindow {
                         return;
                     }
 
-                    debug_assert!(
-                        settings_state_for_dialog.try_borrow_mut().is_ok(),
-                        "Shared state borrow conflict: settings_state_for_dialog_continue"
-                    );
+                    if settings_state_for_dialog.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_dialog_continue"); }
                     if let Ok(mut settings) = settings_state_for_dialog.try_borrow_mut() {
                         settings.hotspot_password_storage = config::HotspotPasswordStorage::PlainJson;
                         settings.plain_json_debug_opt_in = true;
-                        if let Err(e) =
-                            config::save_app_settings(&config::app_settings_path(), &settings)
-                        {
-                            log::warn!("Failed to save app settings: {}", e);
-                        }
+                        spawn_save_settings(&settings);
                     } else {
                         log::error!("Borrow conflict in UI state");
                     }
@@ -1168,16 +1324,11 @@ impl AdwNetworkWindow {
                 return;
             }
 
-            debug_assert!(
-                settings_state_for_storage.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: settings_state_for_storage"
-            );
+            if settings_state_for_storage.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_storage"); }
             if let Ok(mut settings) = settings_state_for_storage.try_borrow_mut() {
                 settings.hotspot_password_storage = selected.clone();
                 settings.plain_json_debug_opt_in = false;
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
                 return;
@@ -1204,16 +1355,11 @@ impl AdwNetworkWindow {
 
         let settings_state_for_quota_reset = settings_state.clone();
         quota_reset_row.connect_selected_notify(move |row| {
-            debug_assert!(
-                settings_state_for_quota_reset.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: settings_state_for_quota_reset"
-            );
+            if settings_state_for_quota_reset.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_quota_reset"); }
             if let Ok(mut settings) = settings_state_for_quota_reset.try_borrow_mut() {
                 settings.hotspot_quota_reset_policy =
                     Self::quota_reset_policy_from_selection(row.selected());
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
             }
@@ -1251,10 +1397,7 @@ impl AdwNetworkWindow {
         let settings_state_for_auto_scan = settings_state.clone();
         auto_scan_row.connect_active_notify(move |row| {
             let active = row.is_active();
-            debug_assert!(
-                prefs_for_auto_scan.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: prefs_for_auto_scan"
-            );
+            if prefs_for_auto_scan.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: prefs_for_auto_scan"); }
             if let Ok(mut prefs) = prefs_for_auto_scan.try_borrow_mut() {
                 prefs.auto_scan = active;
             } else {
@@ -1265,15 +1408,10 @@ impl AdwNetworkWindow {
                 prefs.auto_scan = active;
             });
 
-            debug_assert!(
-                settings_state_for_auto_scan.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: settings_state_for_auto_scan"
-            );
+            if settings_state_for_auto_scan.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_auto_scan"); }
             if let Ok(mut settings) = settings_state_for_auto_scan.try_borrow_mut() {
                 settings.auto_scan = active;
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
             }
@@ -1285,10 +1423,7 @@ impl AdwNetworkWindow {
         let wifi_for_expand = wifi_page.clone();
         expand_details_row.connect_active_notify(move |row| {
             let active = row.is_active();
-            debug_assert!(
-                prefs_for_expand.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: prefs_for_expand"
-            );
+            if prefs_for_expand.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: prefs_for_expand"); }
             if let Ok(mut prefs) = prefs_for_expand.try_borrow_mut() {
                 prefs.expand_connected_details = active;
             } else {
@@ -1300,15 +1435,10 @@ impl AdwNetworkWindow {
             });
             wifi_for_expand.apply_expand_details_setting(active);
 
-            debug_assert!(
-                settings_state_for_expand.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: settings_state_for_expand"
-            );
+            if settings_state_for_expand.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_expand"); }
             if let Ok(mut settings) = settings_state_for_expand.try_borrow_mut() {
                 settings.expand_connected_details = active;
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
             }
@@ -1325,10 +1455,7 @@ impl AdwNetworkWindow {
         let view_switcher_for_nav = view_switcher.clone();
         nav_icons_only_row.connect_active_notify(move |row| {
             let active = row.is_active();
-            debug_assert!(
-                prefs_for_nav_mode.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: prefs_for_nav_mode"
-            );
+            if prefs_for_nav_mode.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: prefs_for_nav_mode"); }
             if let Ok(mut prefs) = prefs_for_nav_mode.try_borrow_mut() {
                 prefs.icons_only_navigation = active;
             } else {
@@ -1348,15 +1475,10 @@ impl AdwNetworkWindow {
                 active,
             );
 
-            debug_assert!(
-                settings_state_for_nav_mode.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: settings_state_for_nav_mode"
-            );
+            if settings_state_for_nav_mode.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_nav_mode"); }
             if let Ok(mut settings) = settings_state_for_nav_mode.try_borrow_mut() {
                 settings.icons_only_navigation = active;
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
             }
@@ -1424,11 +1546,13 @@ impl AdwNetworkWindow {
         let hotspot_page_for_module_preset = hotspot_stack_page.clone();
         let devices_page_for_module_preset = devices_stack_page.clone();
         let profiles_page_for_module_preset = profiles_stack_page.clone();
+        let no_network_page_for_module_preset = no_network_page.clone();
         let edit_modules_box_for_module_preset = edit_modules_box.clone();
         let add_module_btn_for_module_preset = add_module_btn.clone();
         let add_module_popover_for_module_preset = add_module_popover.clone();
         let module_order_row_for_preset = module_order_row.clone();
         module_preset_row.connect_selected_notify(move |row| {
+            let no_network_page_for_module_preset = no_network_page_for_module_preset.clone();
             if module_rows_guard_for_preset.get() {
                 return;
             }
@@ -1461,9 +1585,7 @@ impl AdwNetworkWindow {
             }
             if let Ok(mut settings) = settings_state_for_module_preset.try_borrow_mut() {
                 next_layout.apply_to_settings(&mut settings);
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
                 return;
@@ -1485,6 +1607,7 @@ impl AdwNetworkWindow {
                 &hotspot_page_for_module_preset,
                 &devices_page_for_module_preset,
                 &profiles_page_for_module_preset,
+                &no_network_page_for_module_preset,
                 &view_stack_for_module_preset,
                 resolved,
             );
@@ -1500,6 +1623,7 @@ impl AdwNetworkWindow {
                 &hotspot_page_for_module_preset,
                 &devices_page_for_module_preset,
                 &profiles_page_for_module_preset,
+                &no_network_page_for_module_preset,
             );
         });
 
@@ -1513,6 +1637,7 @@ impl AdwNetworkWindow {
         let hotspot_page_for_module_order = hotspot_stack_page.clone();
         let devices_page_for_module_order = devices_stack_page.clone();
         let profiles_page_for_module_order = profiles_stack_page.clone();
+        let no_network_page_for_module_order = no_network_page.clone();
         let edit_modules_box_for_module_order = edit_modules_box.clone();
         let add_module_btn_for_module_order = add_module_btn.clone();
         let add_module_popover_for_module_order = add_module_popover.clone();
@@ -1536,9 +1661,7 @@ impl AdwNetworkWindow {
             }
             if let Ok(mut settings) = settings_state_for_module_order.try_borrow_mut() {
                 next_layout.apply_to_settings(&mut settings);
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
                 return;
@@ -1560,6 +1683,7 @@ impl AdwNetworkWindow {
                 &hotspot_page_for_module_order,
                 &devices_page_for_module_order,
                 &profiles_page_for_module_order,
+                &no_network_page_for_module_order,
                 &view_stack_for_module_order,
                 resolved,
             );
@@ -1575,6 +1699,7 @@ impl AdwNetworkWindow {
                 &hotspot_page_for_module_order,
                 &devices_page_for_module_order,
                 &profiles_page_for_module_order,
+                &no_network_page_for_module_order,
             );
         });
 
@@ -1590,10 +1715,12 @@ impl AdwNetworkWindow {
         let hotspot_page_for_module_reset = hotspot_stack_page.clone();
         let devices_page_for_module_reset = devices_stack_page.clone();
         let profiles_page_for_module_reset = profiles_stack_page.clone();
+        let no_network_page_for_module_reset = no_network_page.clone();
         let edit_modules_box_for_module_reset = edit_modules_box.clone();
         let add_module_btn_for_module_reset = add_module_btn.clone();
         let add_module_popover_for_module_reset = add_module_popover.clone();
         module_reset_factory_btn.connect_clicked(move |_| {
+            let no_network_page_for_module_reset = no_network_page_for_module_reset.clone();
             let defaults = config::AppSettings::default();
             let availability = module_availability_state_for_reset_defaults
                 .borrow()
@@ -1608,9 +1735,7 @@ impl AdwNetworkWindow {
             }
             if let Ok(mut settings) = settings_state_for_module_reset.try_borrow_mut() {
                 next_layout.apply_to_settings(&mut settings);
-                if let Err(e) = config::save_app_settings(&config::app_settings_path(), &settings) {
-                    log::warn!("Failed to save app settings: {}", e);
-                }
+                spawn_save_settings(&settings);
             } else {
                 log::error!("Borrow conflict in UI state");
                 return;
@@ -1638,6 +1763,7 @@ impl AdwNetworkWindow {
                 &hotspot_page_for_module_reset,
                 &devices_page_for_module_reset,
                 &profiles_page_for_module_reset,
+                &no_network_page_for_module_reset,
                 &view_stack_for_module_reset,
                 resolved,
             );
@@ -1653,6 +1779,7 @@ impl AdwNetworkWindow {
                 &hotspot_page_for_module_reset,
                 &devices_page_for_module_reset,
                 &profiles_page_for_module_reset,
+                &no_network_page_for_module_reset,
             );
         });
 
@@ -1695,14 +1822,9 @@ impl AdwNetworkWindow {
         let view_switcher_for_reset = view_switcher.clone();
         reset_button.connect_clicked(move |_| {
             let defaults = config::AppSettings::default();
-            if let Err(e) = config::save_app_settings(&config::app_settings_path(), &defaults) {
-                log::warn!("Failed to save app settings: {}", e);
-            }
+            spawn_save_settings(&defaults);
 
-            debug_assert!(
-                settings_state_for_reset.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: settings_state_for_reset"
-            );
+            if settings_state_for_reset.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: settings_state_for_reset"); }
             if let Ok(mut settings) = settings_state_for_reset.try_borrow_mut() {
                 *settings = defaults.clone();
             } else {
@@ -1710,10 +1832,7 @@ impl AdwNetworkWindow {
                 return;
             }
 
-            debug_assert!(
-                prefs_for_reset.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: prefs_for_reset"
-            );
+            if prefs_for_reset.try_borrow_mut().is_err() { log::error!("Borrow conflict in UI state: Shared state borrow conflict: prefs_for_reset"); }
             if let Ok(mut prefs) = prefs_for_reset.try_borrow_mut() {
                 prefs.auto_scan = defaults.auto_scan;
                 prefs.expand_connected_details = defaults.expand_connected_details;
@@ -1794,9 +1913,9 @@ impl AdwNetworkWindow {
 
     fn persist_module_layout(layout: ModuleLayoutState) {
         let path = config::app_settings_path();
-        let mut settings = config::load_app_settings(&path).unwrap_or_default();
+        let mut settings = config::load_app_settings_sync(&path).unwrap_or_default();
         layout.apply_to_settings(&mut settings);
-        if let Err(e) = config::save_app_settings(&path, &settings) {
+        if let Err(e) = config::save_app_settings_sync(&path, &settings) {
             log::warn!("Failed to save module layout settings: {}", e);
         }
     }
@@ -1814,6 +1933,7 @@ impl AdwNetworkWindow {
         hotspot_page: &adw::ViewStackPage,
         devices_page: &adw::ViewStackPage,
         profiles_page: &adw::ViewStackPage,
+        no_network_page: &adw::ViewStackPage,
     ) {
         while let Some(child) = edit_modules_box.first_child() {
             edit_modules_box.remove(&child);
@@ -1889,6 +2009,7 @@ impl AdwNetworkWindow {
             let hotspot_page_for_remove = hotspot_page.clone();
             let devices_page_for_remove = devices_page.clone();
             let profiles_page_for_remove = profiles_page.clone();
+            let no_network_page_for_remove = no_network_page.clone();
             let edit_modules_box_for_remove = edit_modules_box.clone();
             let add_module_btn_for_remove = add_module_btn.clone();
             let add_module_popover_for_remove = add_module_popover.clone();
@@ -1917,6 +2038,7 @@ impl AdwNetworkWindow {
                         &hotspot_page_for_remove,
                         &devices_page_for_remove,
                         &profiles_page_for_remove,
+                        &no_network_page_for_remove,
                         &view_stack_for_remove,
                         resolved,
                     );
@@ -1935,6 +2057,7 @@ impl AdwNetworkWindow {
                         &hotspot_page_for_remove,
                         &devices_page_for_remove,
                         &profiles_page_for_remove,
+                        &no_network_page_for_remove,
                     );
                 }
             });
@@ -1959,6 +2082,7 @@ impl AdwNetworkWindow {
             let hotspot_page_for_drop = hotspot_page.clone();
             let devices_page_for_drop = devices_page.clone();
             let profiles_page_for_drop = profiles_page.clone();
+            let no_network_page_for_drop = no_network_page.clone();
             let drop_target =
                 gtk4::DropTarget::new(String::static_type(), gtk4::gdk::DragAction::MOVE);
             drop_target.connect_drop(move |_, value, _, _| {
@@ -2000,6 +2124,7 @@ impl AdwNetworkWindow {
                             &hotspot_page_for_drop,
                             &devices_page_for_drop,
                             &profiles_page_for_drop,
+                            &no_network_page_for_drop,
                             &view_stack_for_drop,
                             resolved,
                         );
@@ -2020,6 +2145,7 @@ impl AdwNetworkWindow {
                         &hotspot_page_for_drop,
                         &devices_page_for_drop,
                         &profiles_page_for_drop,
+                        &no_network_page_for_drop,
                     );
                 }
 
@@ -2046,6 +2172,7 @@ impl AdwNetworkWindow {
             let hotspot_page_for_add = hotspot_page.clone();
             let devices_page_for_add = devices_page.clone();
             let profiles_page_for_add = profiles_page.clone();
+            let no_network_page_for_add = no_network_page.clone();
             row_button.connect_clicked(move |_| {
                 let mut changed = false;
                 if let Ok(mut layout) = layout_state_for_add.try_borrow_mut() {
@@ -2068,6 +2195,7 @@ impl AdwNetworkWindow {
                         &hotspot_page_for_add,
                         &devices_page_for_add,
                         &profiles_page_for_add,
+                        &no_network_page_for_add,
                         &view_stack_for_add,
                         resolved,
                     );
@@ -2087,6 +2215,7 @@ impl AdwNetworkWindow {
                         &hotspot_page_for_add,
                         &devices_page_for_add,
                         &profiles_page_for_add,
+                        &no_network_page_for_add,
                     );
                 }
             });
@@ -2101,6 +2230,7 @@ impl AdwNetworkWindow {
         hotspot_page: &adw::ViewStackPage,
         devices_page: &adw::ViewStackPage,
         profiles_page: &adw::ViewStackPage,
+        no_network_page: &adw::ViewStackPage,
         view_stack: &adw::ViewStack,
         visible: ModuleFlags,
     ) {
@@ -2110,13 +2240,19 @@ impl AdwNetworkWindow {
         devices_page.set_visible(visible.devices);
         profiles_page.set_visible(visible.profiles);
 
+        let any_visible = visible.wifi || visible.ethernet || visible.hotspot || visible.devices || visible.profiles;
+        no_network_page.set_visible(!any_visible);
+
         let current_visible = view_stack
             .visible_child()
             .map(|w| view_stack.page(&w).is_visible())
             .unwrap_or(false);
 
         if !current_visible {
-            if wifi_page.is_visible() {
+            if no_network_page.is_visible() {
+                let child = no_network_page.child();
+                view_stack.set_visible_child(&child);
+            } else if wifi_page.is_visible() {
                 let child = wifi_page.child();
                 view_stack.set_visible_child(&child);
             } else if ethernet_page.is_visible() {
@@ -2194,7 +2330,7 @@ impl AdwNetworkWindow {
 
     fn load_saved_theme() {
         let style_manager = adw::StyleManager::default();
-        if let Ok(settings) = config::load_app_settings(&config::app_settings_path()) {
+        if let Ok(settings) = config::load_app_settings_sync(&config::app_settings_path()) {
             let scheme = match settings.color_scheme.as_str() {
                 "light" => adw::ColorScheme::ForceLight,
                 "dark" => adw::ColorScheme::ForceDark,
@@ -2626,18 +2762,43 @@ button.action-pill.forget image {
 }
 
 button.destructive-action {
-    color: @error_color;
+    color: @error_fg_color;
+    background: alpha(@error_color, 0.18);
+    border: 1px solid alpha(@error_color, 0.35);
     font-weight: 700;
 }
 
 button.destructive-action:hover {
     background: alpha(@error_color, 0.32);
-    color: @error_color;
+    border-color: alpha(@error_color, 0.55);
+    color: @error_fg_color;
+}
+
+button.destructive-action:active {
+    background: alpha(@error_color, 0.45);
 }
 
 button.destructive-action image,
 button.destructive-action:hover image {
-    color: @error_color;
+    color: @error_fg_color;
+    opacity: 1;
+}
+
+/* ! flat overrides the background — re-apply red for flat+destructive (used by forget btn) */
+button.flat.destructive-action {
+    background: alpha(@error_color, 0.14);
+    border: 1px solid alpha(@error_color, 0.28);
+    color: @error_fg_color;
+}
+
+button.flat.destructive-action:hover {
+    background: alpha(@error_color, 0.28);
+    border-color: alpha(@error_color, 0.5);
+    color: @error_fg_color;
+}
+
+button.flat.destructive-action image {
+    color: @error_fg_color;
     opacity: 1;
 }
 
@@ -3119,16 +3280,30 @@ statuspage.devices-empty image {
 
         provider.load_from_data(css);
 
-        gtk4::style_context_add_provider_for_display(
-            &gtk4::gdk::Display::default().expect("Could not connect to display"),
-            &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        if let Some(display) = gtk4::gdk::Display::default() {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
     }
 
     pub fn present(&self) {
         self.window.present();
     }
+}
+
+fn spawn_save_settings(settings: &config::AppSettings) {
+    let path = config::app_settings_path();
+    let settings = settings.clone();
+    glib::spawn_future_local(async move {
+        match tokio::task::spawn_blocking(move || config::save_app_settings_sync(&path, &settings)).await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => log::warn!("Failed to save app settings: {}", e),
+            Err(e) => log::error!("spawn_blocking panicked: {}", e),
+        }
+    });
 }
 
 fn read_interface_bytes(iface: &str) -> Option<(u64, u64)> {

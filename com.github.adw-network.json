@@ -10,8 +10,8 @@
     "--share=ipc",
     "--socket=fallback-x11",
     "--socket=wayland",
-    "--talk-name=org.freedesktop.NetworkManager",
-    "--talk-name=org.freedesktop.ModemManager1",
+    "--system-talk-name=org.freedesktop.NetworkManager",
+    "--system-talk-name=org.freedesktop.ModemManager1",
     "--talk-name=org.freedesktop.secrets",
     "--filesystem=xdg-config/adw-network:create",
     "--filesystem=xdg-data/adw-network:create",
@@ -24,7 +24,9 @@
     "--filesystem=/usr/share/hwdata:ro",
     "--filesystem=/usr/share/misc:ro",
     "--filesystem=/usr/share/ieee-data:ro",
-    "--filesystem=/var/lib/ieee-data:ro"
+    "--filesystem=/var/lib/ieee-data:ro",
+    "--socket=pulseaudio",
+    "--device=dri"
   ],
   "modules": [
     {

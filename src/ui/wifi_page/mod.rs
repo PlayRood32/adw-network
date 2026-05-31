@@ -1,7 +1,7 @@
-// * Credits and inspirations:
-// * airctl (pshycodr) for network-focused UI patterns.
-// * GNOME Settings Network panel.
+// * ./src/ui/wifi_page/mod.rs
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::{self as adw, prelude::*};
@@ -17,7 +17,7 @@ mod actions;
 mod details;
 mod dialogs;
 use actions::BusyGuard;
-use details::{get_signal_icon, get_signal_strength_text, invalid_ip_entries};
+use details::{get_signal_icon, get_signal_strength_text, get_signal_strength_text_plain, invalid_ip_entries};
 use dialogs::parse_entry_list;
 
 #[derive(Clone)]
@@ -44,6 +44,7 @@ pub struct WifiPage {
     other_list: gtk4::ListBox,
     empty_state: adw::StatusPage,
     empty_action: gtk4::Button,
+    empty_sys_action: gtk4::Button,
     filter_all: gtk4::ToggleButton,
     filter_24: gtk4::ToggleButton,
     filter_5: gtk4::ToggleButton,
@@ -273,12 +274,28 @@ impl WifiPage {
             .build();
         empty_action.set_visible(false);
 
+        let empty_sys_action = gtk4::Button::builder()
+            .label("Open System Settings")
+            .css_classes(vec!["suggested-action".to_string()])
+            .build();
+        empty_sys_action.set_visible(false);
+        let empty_action_box = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+        empty_action_box.set_halign(gtk4::Align::Center);
+        empty_action_box.append(&empty_action);
+        empty_action_box.append(&empty_sys_action);
+
+        empty_sys_action.connect_clicked(move |_| {
+            let _ = std::process::Command::new("gnome-control-center")
+                .arg("network")
+                .spawn();
+        });
+
         content.append(&known_header);
         content.append(&known_list);
         content.append(&other_header);
         content.append(&other_list);
         content.append(&empty_state);
-        content.append(&empty_action);
+        content.append(&empty_action_box);
 
         clamp.set_child(Some(&content));
         scrolled.set_child(Some(&clamp));
@@ -307,6 +324,7 @@ impl WifiPage {
             other_list: other_list.clone(),
             empty_state: empty_state.clone(),
             empty_action: empty_action.clone(),
+            empty_sys_action: empty_sys_action.clone(),
             filter_all: filter_all.clone(),
             filter_24: filter_24.clone(),
             filter_5: filter_5.clone(),
@@ -383,6 +401,7 @@ impl WifiPage {
         glib::spawn_future_local(async move {
             match nm::is_wifi_enabled().await {
                 Ok(enabled) => {
+                    page_ref.app_state.set_wifi_enabled(enabled);
                     page_ref.wifi_switch.set_active(enabled);
                     page_ref.update_filter_controls(enabled);
                     if enabled {
@@ -391,6 +410,7 @@ impl WifiPage {
                         page_ref.load_saved_connections().await;
                         page_ref.update_filtered_networks();
                     }
+                    page_ref.app_state.set_wifi_scan_complete(true);
                 }
                 Err(e) => {
                     log::error!("Failed to check WiFi state: {}", e);
@@ -409,6 +429,7 @@ impl WifiPage {
                 page.filter_all.set_active(true);
             }
 
+            page.app_state.set_wifi_enabled(enabled);
             glib::spawn_future_local(async move {
                 match nm::set_wifi_enabled(enabled).await {
                     Ok(_) => {
@@ -419,6 +440,7 @@ impl WifiPage {
                             page.load_saved_connections().await;
                             page.update_filtered_networks();
                         }
+                        page.app_state.set_wifi_scan_complete(true);
                     }
                     Err(e) => {
                         log::error!("Failed to toggle WiFi: {}", e);
@@ -690,6 +712,7 @@ impl WifiPage {
         match nm::scan_networks().await {
             Ok(networks) => {
                 self.app_state.set_wifi_all_networks(networks);
+                self.app_state.set_wifi_scan_complete(true);
                 self.update_filtered_networks();
             }
             Err(e) => {
@@ -699,6 +722,7 @@ impl WifiPage {
                 } else {
                     self.show_toast(&format!("Failed to scan: {}", e));
                 }
+                self.app_state.set_wifi_scan_complete(true);
                 self.update_filtered_networks();
             }
         }
@@ -828,6 +852,7 @@ impl WifiPage {
 
         self.empty_state.set_visible(false);
         self.empty_action.set_visible(false);
+        self.empty_sys_action.set_visible(false);
 
         let saved = self.app_state.wifi_saved_ssids();
         let mut known = Vec::new();
@@ -882,11 +907,13 @@ impl WifiPage {
                 self.empty_state
                     .set_description(Some("Refresh or wait for networks to appear"));
                 self.empty_action.set_visible(false);
+                self.empty_sys_action.set_visible(true);
             } else {
                 self.empty_state.set_title("Wi-Fi is Off");
                 self.empty_state
                     .set_description(Some("Turn on Wi-Fi to scan for networks"));
                 self.empty_action.set_visible(true);
+                self.empty_sys_action.set_visible(false);
             }
             self.empty_state.set_visible(true);
         }
@@ -894,7 +921,8 @@ impl WifiPage {
 
     fn update_connected_card(&self, network: &WifiNetwork) {
         self.connected_ssid.set_text(&network.ssid);
-        let signal_text = get_signal_strength_text(network.signal);
+        // * set_text — no markup, use plain text version to avoid Pango "<" parse errors
+        let signal_text = get_signal_strength_text_plain(network.signal);
         let subtitle = format!(
             "Connected • {} • {} • Channel {}",
             signal_text, network.band, network.channel
@@ -1525,7 +1553,7 @@ impl WifiPage {
 
     async fn show_qr_code(&self, network: &WifiNetwork) {
         let password = if network.secured {
-            match self.prompt_qr_password(&network.ssid).await {
+            match self.prompt_sudo_for_wifi_password(&network.ssid).await {
                 Some(password) => password,
                 None => return,
             }
@@ -1537,19 +1565,22 @@ impl WifiPage {
             &network.ssid,
             &password,
             Some(network.security_type.as_str()),
-            300,
+            // * Smaller fixed size — was 300, dialog was filling the whole window
+            200,
             &self.toast_overlay,
         )
         .await;
     }
 
-    async fn prompt_qr_password(&self, ssid: &str) -> Option<String> {
+    // * Asks for sudo password, uses it to retrieve the saved wifi password via nmcli --show-secrets
+    async fn prompt_sudo_for_wifi_password(&self, ssid: &str) -> Option<String> {
         if !nm::is_network_saved(ssid).await.unwrap_or(false) {
             self.show_toast("Save and connect to the network before generating a QR code");
             return None;
         }
-        let password_entry = adw::PasswordEntryRow::builder()
-            .title("Password")
+
+        let sudo_entry = adw::PasswordEntryRow::builder()
+            .title("sudo password")
             .activates_default(true)
             .build();
 
@@ -1558,11 +1589,11 @@ impl WifiPage {
         content_box.set_margin_bottom(12);
         content_box.set_margin_start(12);
         content_box.set_margin_end(12);
-        content_box.append(&password_entry);
+        content_box.append(&sudo_entry);
 
         let dialog = adw::AlertDialog::builder()
             .heading(format!("QR Code for {}", ssid))
-            .body("Enter the network password to generate a QR code")
+            .body("Enter your sudo password to read the saved network password")
             .extra_child(&content_box)
             .default_response("generate")
             .close_response("cancel")
@@ -1570,22 +1601,30 @@ impl WifiPage {
         dialog.add_responses(&[("cancel", "Cancel"), ("generate", "Generate")][..]);
         dialog.set_response_appearance("generate", adw::ResponseAppearance::Suggested);
 
-        let response = if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
-            dialog.choose_future(Some(parent)).await
-        } else {
-            dialog.choose_future(None::<&gtk4::Window>).await
-        };
+        let response =
+            if let Some(parent) = self.widget.root().and_downcast_ref::<gtk4::Window>() {
+                dialog.choose_future(Some(parent)).await
+            } else {
+                dialog.choose_future(None::<&gtk4::Window>).await
+            };
 
         if response.as_str() != "generate" {
             return None;
         }
 
-        let password = password_entry.text().to_string();
-        if password.is_empty() {
+        let sudo_password = sudo_entry.text().to_string();
+        if sudo_password.is_empty() {
             return None;
         }
 
-        Some(password)
+        match nm::get_wifi_password_with_sudo(ssid, &sudo_password).await {
+            Ok(wifi_password) => Some(wifi_password),
+            Err(e) => {
+                log::error!("Failed to retrieve wifi password via sudo: {}", e);
+                self.show_toast(&format!("Failed to get password: {}", e));
+                None
+            }
+        }
     }
 
     async fn show_network_info_dialog(&self, network: &WifiNetwork) {
@@ -1880,7 +1919,8 @@ impl WifiPage {
             (
                 get_signal_icon(network.signal),
                 "Signal strength".to_string(),
-                get_signal_strength_text(network.signal),
+                // * gtk4::Label::new uses set_text internally — plain version, no &lt;
+                get_signal_strength_text_plain(network.signal),
             ),
             (
                 "network-wireless-symbolic",
@@ -2028,6 +2068,101 @@ impl WifiPage {
 
         info_box.append(&details_card);
 
+        // * Password section — only for saved secured networks.
+        // * User enters sudo password → we reveal the wifi password with copy button.
+        if is_saved && network.secured {
+            let password_group = adw::PreferencesGroup::builder()
+                .title("Password")
+                .build();
+
+            // ! Revealed password is stored only in memory — never written to disk here
+            let revealed_password: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+            let password_row = adw::PasswordEntryRow::builder()
+                .title("Wi-Fi Password")
+                .editable(false)
+                .build();
+            password_row.set_sensitive(false);
+
+            let copy_btn = gtk4::Button::builder()
+                .icon_name("edit-copy-symbolic")
+                .tooltip_text("Copy password")
+                .css_classes(vec!["flat".to_string()])
+                .valign(gtk4::Align::Center)
+                .build();
+            copy_btn.set_visible(false);
+            password_row.add_suffix(&copy_btn);
+
+            let reveal_btn = gtk4::Button::builder()
+                .label("Reveal")
+                .css_classes(vec!["suggested-action".to_string()])
+                .valign(gtk4::Align::Center)
+                .build();
+
+            let action_row = adw::ActionRow::builder()
+                .title("Reveal saved password")
+                .subtitle("Requires sudo authentication")
+                .build();
+            action_row.add_suffix(&reveal_btn);
+            action_row.set_activatable_widget(Some(&reveal_btn));
+
+            // Wire up copy button
+            let password_row_copy = password_row.clone();
+            copy_btn.connect_clicked(move |btn| {
+                let text = password_row_copy.text().to_string();
+                if !text.is_empty() {
+                    let display = btn.display();
+                    display.clipboard().set_text(&text);
+                }
+            });
+
+            // Wire up reveal button — prompts sudo inline
+            let page_reveal = self.clone();
+            let ssid_reveal = network.ssid.clone();
+            let password_row_reveal = password_row.clone();
+            let copy_btn_reveal = copy_btn.clone();
+            let revealed_ref = revealed_password.clone();
+            reveal_btn.connect_clicked(move |btn| {
+                // If already revealed, hide again
+                if revealed_ref.borrow().is_some() {
+                    *revealed_ref.borrow_mut() = None;
+                    password_row_reveal.set_text("");
+                    password_row_reveal.set_sensitive(false);
+                    copy_btn_reveal.set_visible(false);
+                    btn.set_label("Reveal");
+                    return;
+                }
+
+                let page = page_reveal.clone();
+                let ssid = ssid_reveal.clone();
+                let password_row = password_row_reveal.clone();
+                let copy_btn = copy_btn_reveal.clone();
+                let btn_weak = btn.downgrade();
+                let revealed = revealed_ref.clone();
+
+                glib::spawn_future_local(async move {
+                    match page.prompt_sudo_for_wifi_password(&ssid).await {
+                        Some(wifi_pass) => {
+                            password_row.set_text(&wifi_pass);
+                            password_row.set_sensitive(true);
+                            copy_btn.set_visible(true);
+                            *revealed.borrow_mut() = Some(wifi_pass);
+                            if let Some(btn) = btn_weak.upgrade() {
+                                btn.set_label("Hide");
+                            }
+                        }
+                        None => {
+                            log::warn!("Sudo auth cancelled or failed for password reveal");
+                        }
+                    }
+                });
+            });
+
+            password_group.add(&password_row);
+            password_group.add(&action_row);
+            info_box.append(&password_group);
+        }
+
         scrolled.set_child(Some(&info_box));
         main_box.append(&scrolled);
         dialog.set_child(Some(&main_box));
@@ -2054,6 +2189,7 @@ impl WifiPage {
         self.other_header.set_visible(false);
         self.other_list.set_visible(false);
         self.empty_state.set_visible(true);
+        self.empty_sys_action.set_visible(false);
     }
 
     fn show_toast(&self, message: &str) {

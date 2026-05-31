@@ -1,5 +1,4 @@
-// File: hotspot_page.rs
-// Location: /src/ui/hotspot_page.rs
+// * ./src/ui/hotspot_page/mod.rs
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -68,17 +67,11 @@ pub struct HotspotPage {
     revealed_password_label: gtk4::Label,
     strength_label: gtk4::Label,
     strength_bar: gtk4::ProgressBar,
-    // Shared UI state - accessed only from the main thread.
     devices: Rc<RefCell<Vec<String>>>,
-    // Shared UI state - accessed only from the main thread.
     is_active: Rc<Cell<bool>>,
-    // Shared UI state - accessed only from the main thread.
     wifi_present: Rc<Cell<bool>>,
-    // Shared UI state - accessed only from the main thread.
     wifi_enabled: Rc<Cell<bool>>,
-    // Shared UI state - accessed only from the main thread.
     app_state: AppState,
-    // Shared UI state - accessed only from the main thread.
     operation_in_progress: Rc<Cell<bool>>,
     config_dirty: Rc<Cell<bool>>,
     client_rules: Rc<RefCell<Vec<HotspotClientRule>>>,
@@ -726,18 +719,14 @@ impl HotspotPage {
                 .value_as_int()
                 .max(MIN_PASSWORD_LEN as i32) as usize;
             let password = crate::ui::hotspot_page::password::generate_password(len, true);
-            if let Ok(mut temporary_password) = page_ref.temporary_password.try_borrow_mut() {
-                *temporary_password = Some(password);
-            }
+            *page_ref.temporary_password.borrow_mut() = Some(password);
             page_ref.update_guest_password_ui();
             page_ref.set_config_dirty(true);
         });
 
         let page_ref = page.clone();
         clear_guest_button.connect_clicked(move |_| {
-            if let Ok(mut temporary_password) = page_ref.temporary_password.try_borrow_mut() {
-                temporary_password.take();
-            }
+            page_ref.temporary_password.borrow_mut().take();
             page_ref.update_guest_password_ui();
             page_ref.set_config_dirty(true);
         });
@@ -1116,8 +1105,8 @@ impl HotspotPage {
 
     fn current_interface_name(&self) -> String {
         let iface_idx = self.interface_combo.selected() as usize;
-        let devices = self.devices.borrow();
-        devices
+        self.devices
+            .borrow()
             .get(iface_idx)
             .cloned()
             .unwrap_or_else(|| "wlan0".to_string())
@@ -1131,7 +1120,7 @@ impl HotspotPage {
     ) -> bool {
         let config_storage = self.persist_password_with_fallback(storage, &config.password);
         let config_to_save = Self::config_for_storage(config, &config_storage);
-        match config::save_config(&config::hotspot_config_path(), &config_to_save) {
+        match config::save_config_sync(&config::hotspot_config_path(), &config_to_save) {
             Ok(_) => true,
             Err(e) => {
                 log::error!("Failed to save configuration: {}", e);
@@ -1252,7 +1241,7 @@ impl HotspotPage {
 
     async fn load_config(&self) {
         let storage = self.load_password_storage();
-        match config::load_config(&config::hotspot_config_path()) {
+        match config::load_config(&config::hotspot_config_path()).await {
             Ok(config) => {
                 let password = self
                     .resolve_password_for_storage(&storage, Some(&config))
@@ -1278,13 +1267,9 @@ impl HotspotPage {
                     self.mac_filter_combo
                         .set_selected(selection_from_mac_filter_mode(&config.mac_filter_mode));
                 });
-                if let Ok(mut temporary_password) = self.temporary_password.try_borrow_mut() {
-                    *temporary_password = hotspot::load_temporary_password();
-                }
+                *self.temporary_password.borrow_mut() = hotspot::load_temporary_password();
                 self.update_guest_password_ui();
-                if let Ok(mut rules) = self.client_rules.try_borrow_mut() {
-                    *rules = config.client_rules.clone();
-                }
+                *self.client_rules.borrow_mut() = config.client_rules.clone();
                 self.update_client_rules_summary();
                 self.set_config_dirty(false);
             }
@@ -1306,13 +1291,9 @@ impl HotspotPage {
                     self.device_limit_spin.set_value(0.0);
                     self.mac_filter_combo.set_selected(0);
                 });
-                if let Ok(mut temporary_password) = self.temporary_password.try_borrow_mut() {
-                    *temporary_password = hotspot::load_temporary_password();
-                }
+                *self.temporary_password.borrow_mut() = hotspot::load_temporary_password();
                 self.update_guest_password_ui();
-                if let Ok(mut rules) = self.client_rules.try_borrow_mut() {
-                    rules.clear();
-                }
+                self.client_rules.borrow_mut().clear();
                 self.update_client_rules_summary();
                 self.set_config_dirty(false);
             }
@@ -1504,16 +1485,7 @@ impl HotspotPage {
         match hotspot::get_wifi_devices().await {
             Ok(mut ifaces) if !ifaces.is_empty() => {
                 ifaces.sort();
-                debug_assert!(
-                    self.devices.try_borrow_mut().is_ok(),
-                    "Shared state borrow conflict: hotspot_devices_set"
-                );
-                if let Ok(mut devices) = self.devices.try_borrow_mut() {
-                    *devices = ifaces.clone();
-                } else {
-                    log::error!("Borrow conflict in UI state");
-                    return;
-                }
+                *self.devices.borrow_mut() = ifaces.clone();
                 let model =
                     gtk4::StringList::new(&ifaces.iter().map(|s| s.as_str()).collect::<Vec<_>>());
                 let selected_idx = previous_iface
@@ -1532,16 +1504,7 @@ impl HotspotPage {
                 );
             }
             Ok(_) => {
-                debug_assert!(
-                    self.devices.try_borrow_mut().is_ok(),
-                    "Shared state borrow conflict: hotspot_devices_clear"
-                );
-                if let Ok(mut devices) = self.devices.try_borrow_mut() {
-                    *devices = Vec::new();
-                } else {
-                    log::error!("Borrow conflict in UI state");
-                    return;
-                }
+                *self.devices.borrow_mut() = Vec::new();
                 let empty_model = gtk4::StringList::new(&[][..]);
                 self.with_suppressed_config_updates(|| {
                     self.interface_combo.set_model(Some(&empty_model));
@@ -1550,16 +1513,7 @@ impl HotspotPage {
             }
             Err(e) => {
                 log::error!("Failed to load hotspot interfaces: {}", e);
-                debug_assert!(
-                    self.devices.try_borrow_mut().is_ok(),
-                    "Shared state borrow conflict: hotspot_devices_error"
-                );
-                if let Ok(mut devices) = self.devices.try_borrow_mut() {
-                    devices.clear();
-                } else {
-                    log::error!("Borrow conflict in UI state");
-                    return;
-                }
+                self.devices.borrow_mut().clear();
                 let empty_model = gtk4::StringList::new(&[][..]);
                 self.with_suppressed_config_updates(|| {
                     self.interface_combo.set_model(Some(&empty_model));
@@ -1582,16 +1536,7 @@ impl HotspotPage {
             .set_visible(present && enabled && self.is_active.get());
 
         if !present {
-            debug_assert!(
-                self.devices.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: hotspot_devices_no_present"
-            );
-            if let Ok(mut devices) = self.devices.try_borrow_mut() {
-                devices.clear();
-            } else {
-                log::error!("Borrow conflict in UI state");
-                return;
-            }
+            self.devices.borrow_mut().clear();
             let empty_model = gtk4::StringList::new(&[][..]);
             self.interface_combo.set_model(Some(&empty_model));
             self.hotspot_switch.set_active(false);
@@ -1737,7 +1682,7 @@ impl HotspotPage {
     }
 
     fn load_password_storage(&self) -> HotspotPasswordStorage {
-        config::load_app_settings(&config::app_settings_path())
+        config::load_app_settings_sync(&config::app_settings_path())
             .map(|s| s.hotspot_password_storage)
             .unwrap_or(HotspotPasswordStorage::Keyring)
     }
@@ -1905,9 +1850,7 @@ impl HotspotPage {
             return;
         }
 
-        if let Ok(mut rules) = self.client_rules.try_borrow_mut() {
-            *rules = rules_state.borrow().clone();
-        }
+        *self.client_rules.borrow_mut() = rules_state.borrow().clone();
         self.update_client_rules_summary();
         self.schedule_configuration_update();
     }

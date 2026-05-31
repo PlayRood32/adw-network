@@ -1,8 +1,13 @@
+-e // * ./src/nm_dbus.rs
+
 use anyhow::{anyhow, Context, Result};
+use futures_core::Stream;
 use std::collections::{HashMap, HashSet};
+use std::future::poll_fn;
 use std::net::Ipv4Addr;
+use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
-use zbus::{Connection, Proxy};
+use zbus::{Connection, Message, Proxy};
 use zvariant::{Array, OwnedObjectPath, OwnedValue, Str};
 
 use crate::config::HotspotConfig;
@@ -22,12 +27,65 @@ const NM_DHCP4_CONFIG_IFACE: &str = "org.freedesktop.NetworkManager.DHCP4Config"
 
 pub const NM_DEVICE_TYPE_ETHERNET: u32 = 1;
 pub const NM_DEVICE_TYPE_WIFI: u32 = 2;
-pub const NM_WIFI_DEVICE_CAP_AP: u32 = 0x00000040;
+pub const NM_DEVICE_TYPE_UNUSED1: u32 = 3;
+pub const NM_DEVICE_TYPE_UNUSED2: u32 = 4;
+pub const NM_DEVICE_TYPE_BT: u32 = 5;
+pub const NM_DEVICE_TYPE_OLPC_MESH: u32 = 6;
+pub const NM_DEVICE_TYPE_WIMAX: u32 = 7;
+pub const NM_DEVICE_TYPE_MODEM: u32 = 8;
+pub const NM_DEVICE_TYPE_INFINIBAND: u32 = 9;
+pub const NM_DEVICE_TYPE_BOND: u32 = 10;
+pub const NM_DEVICE_TYPE_VLAN: u32 = 11;
+pub const NM_DEVICE_TYPE_ADSL: u32 = 12;
+pub const NM_DEVICE_TYPE_BRIDGE: u32 = 13;
+pub const NM_DEVICE_TYPE_LOOPBACK: u32 = 14;
+pub const NM_DEVICE_TYPE_MACVLAN: u32 = 15;
+pub const NM_DEVICE_TYPE_VXLAN: u32 = 16;
+pub const NM_DEVICE_TYPE_VETH: u32 = 17;
+pub const NM_DEVICE_TYPE_MACSEC: u32 = 18;
+pub const NM_DEVICE_TYPE_DUMMY: u32 = 19;
+pub const NM_DEVICE_TYPE_PPP: u32 = 20;
+pub const NM_DEVICE_TYPE_OPENVSWITCH: u32 = 21;
+pub const NM_DEVICE_TYPE_TEAM: u32 = 22;
+pub const NM_DEVICE_TYPE_TUN: u32 = 23;
+pub const NM_DEVICE_TYPE_IP_TUNNEL: u32 = 24;
+pub const NM_DEVICE_TYPE_VRF: u32 = 25;
 
+pub const NM_WIFI_DEVICE_CAP_NONE: u32 = 0x00000000;
+pub const NM_WIFI_DEVICE_CAP_CIPHER_WEP40: u32 = 0x00000001;
+pub const NM_WIFI_DEVICE_CAP_CIPHER_WEP104: u32 = 0x00000002;
+pub const NM_WIFI_DEVICE_CAP_CIPHER_TKIP: u32 = 0x00000004;
+pub const NM_WIFI_DEVICE_CAP_CIPHER_CCMP: u32 = 0x00000008;
+pub const NM_WIFI_DEVICE_CAP_WPA: u32 = 0x00000010;
+pub const NM_WIFI_DEVICE_CAP_WPA2: u32 = 0x00000020;
+pub const NM_WIFI_DEVICE_CAP_AP: u32 = 0x00000040;
+pub const NM_WIFI_DEVICE_CAP_ADHOC: u32 = 0x00000080;
+
+pub const NM_DEVICE_STATE_UNKNOWN: u32 = 0;
 pub const NM_DEVICE_STATE_UNMANAGED: u32 = 10;
 pub const NM_DEVICE_STATE_UNAVAILABLE: u32 = 20;
+pub const NM_DEVICE_STATE_DISCONNECTED: u32 = 30;
+pub const NM_DEVICE_STATE_PREPARE: u32 = 40;
+pub const NM_DEVICE_STATE_CONFIG: u32 = 50;
+pub const NM_DEVICE_STATE_NEED_AUTH: u32 = 60;
+pub const NM_DEVICE_STATE_IP_CONFIG: u32 = 70;
+pub const NM_DEVICE_STATE_IP_CHECK: u32 = 80;
+pub const NM_DEVICE_STATE_SECONDARIES: u32 = 90;
+pub const NM_DEVICE_STATE_ACTIVATED: u32 = 100;
+pub const NM_DEVICE_STATE_DEACTIVATING: u32 = 110;
+pub const NM_DEVICE_STATE_FAILED: u32 = 120;
 
+pub const NM_ACTIVE_CONNECTION_STATE_UNKNOWN: u32 = 0;
+pub const NM_ACTIVE_CONNECTION_STATE_ACTIVATING: u32 = 1;
 pub const NM_ACTIVE_CONNECTION_STATE_ACTIVATED: u32 = 2;
+pub const NM_ACTIVE_CONNECTION_STATE_DEACTIVATING: u32 = 3;
+pub const NM_ACTIVE_CONNECTION_STATE_DEACTIVATED: u32 = 4;
+
+pub const NM_CONNECTIVITY_UNKNOWN: u32 = 0;
+pub const NM_CONNECTIVITY_NONE: u32 = 1;
+pub const NM_CONNECTIVITY_PORTAL: u32 = 2;
+pub const NM_CONNECTIVITY_LIMITED: u32 = 3;
+pub const NM_CONNECTIVITY_FULL: u32 = 4;
 
 pub type SettingsMap = HashMap<String, HashMap<String, OwnedValue>>;
 
@@ -125,13 +183,14 @@ pub struct DbusIp4Info {
 #[derive(Clone)]
 pub struct NmDbusClient {
     conn: Connection,
+    nm_proxy: Proxy<'static>,
 }
 
 impl NmDbusClient {
     pub async fn new() -> Result<Self> {
-        Ok(Self {
-            conn: Connection::system().await?,
-        })
+        let conn = Connection::system().await?;
+        let nm_proxy = Proxy::new(&conn, NM_SERVICE, NM_PATH, NM_IFACE).await?;
+        Ok(Self { conn, nm_proxy })
     }
 
     async fn proxy<'a>(&'a self, path: &'a str, iface: &'a str) -> Result<Proxy<'a>> {
@@ -287,7 +346,7 @@ impl NmDbusClient {
 
     pub async fn get_connectivity_state(&self) -> Result<u32> {
         let nm = self.proxy(NM_PATH, NM_IFACE).await?;
-        let state: u32 = nm.get_property("Connectivity").await.unwrap_or(0);
+        let state: u32 = nm.get_property("Connectivity").await.unwrap_or(NM_CONNECTIVITY_UNKNOWN);
         Ok(state)
     }
 
@@ -525,10 +584,20 @@ impl NmDbusClient {
                 .find(|d| d.interface == iface)
                 .ok_or_else(|| anyhow!("Network device {} not found", iface))?
         } else {
+            // ! Filter loopback and virtual devices — NM sometimes returns lo first,
+            // ! which causes "profile is not compatible with device" errors.
+            let physical_types = [
+                NM_DEVICE_TYPE_ETHERNET,
+                NM_DEVICE_TYPE_WIFI,
+                NM_DEVICE_TYPE_MODEM,
+            ];
             devices
                 .into_iter()
-                .find(|d| d.state != NM_DEVICE_STATE_UNMANAGED)
-                .ok_or_else(|| anyhow!("No managed NetworkManager device found"))?
+                .find(|d| {
+                    d.state != NM_DEVICE_STATE_UNMANAGED
+                        && physical_types.contains(&d.device_type)
+                })
+                .ok_or_else(|| anyhow!("No managed physical NetworkManager device found"))?
         };
 
         let nm = self.proxy(NM_PATH, NM_IFACE).await?;
@@ -537,6 +606,27 @@ impl NmDbusClient {
             .call(
                 "ActivateConnection",
                 &(connection_path.clone(), device.path.clone(), root),
+            )
+            .await?;
+        Ok(active_path)
+    }
+
+    // * VPNs don't have a hardware device — NM expects "/" as the device path.
+    // ! Do NOT use activate_connection_path for VPNs — it picks a random ethernet/wifi
+    // ! device which causes "UnknownDevice: The device doesn't match the active connection".
+    pub async fn activate_vpn_connection_path(
+        &self,
+        connection_path: &OwnedObjectPath,
+    ) -> Result<OwnedObjectPath> {
+        let nm = self.proxy(NM_PATH, NM_IFACE).await?;
+        let root = Self::root_path()?;
+        // * "/" signals NM to activate the VPN without binding to a specific device
+        let no_device = OwnedObjectPath::try_from("/")
+            .map_err(|e| anyhow!("Failed to build VPN device path: {}", e))?;
+        let active_path: OwnedObjectPath = nm
+            .call(
+                "ActivateConnection",
+                &(connection_path.clone(), no_device, root),
             )
             .await?;
         Ok(active_path)
@@ -554,6 +644,53 @@ impl NmDbusClient {
         self.activate_connection_path(&connection.path, iface).await
     }
 
+    fn activation_state_result(state: u32, reason: u32) -> Result<Option<()>> {
+        match state {
+            NM_ACTIVE_CONNECTION_STATE_ACTIVATED => Ok(Some(())),
+            NM_ACTIVE_CONNECTION_STATE_DEACTIVATING | NM_ACTIVE_CONNECTION_STATE_DEACTIVATED => {
+                Err(anyhow!(
+                    "Connection activation stopped before reaching active state (reason {})",
+                    reason
+                ))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub async fn wait_for_active_connection_activated(
+        &self,
+        active_path: &OwnedObjectPath,
+    ) -> Result<()> {
+        let active = self.proxy(active_path.as_str(), NM_ACTIVE_CONN_IFACE).await?;
+        let stream = active.receive_signal("StateChanged").await?;
+
+        let current_state: u32 = active.get_property("State").await?;
+        if Self::activation_state_result(current_state, 0)?.is_some() {
+            return Ok(());
+        }
+
+        tokio::pin!(stream);
+        loop {
+            let msg: Option<Message> = poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
+            let Some(msg) = msg else {
+                return Err(anyhow!(
+                    "NetworkManager active-connection state signal ended before activation"
+                ));
+            };
+
+            if let Ok((state, reason)) = msg.body().deserialize::<(u32, u32)>() {
+                log::debug!(
+                    "NM active connection StateChanged: state={}, reason={}",
+                    state,
+                    reason
+                );
+                if Self::activation_state_result(state, reason)?.is_some() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     pub async fn activate_connection_by_uuid(
         &self,
         uuid: &str,
@@ -564,6 +701,18 @@ impl NmDbusClient {
             .await?
             .ok_or_else(|| anyhow!("Connection {} not found", uuid))?;
         self.activate_connection_path(&connection.path, iface).await
+    }
+
+    // * VPN-specific activation — always uses "/" as device path
+    pub async fn activate_vpn_connection_by_uuid(
+        &self,
+        uuid: &str,
+    ) -> Result<OwnedObjectPath> {
+        let connection = self
+            .find_connection_by_uuid(uuid)
+            .await?
+            .ok_or_else(|| anyhow!("VPN connection {} not found", uuid))?;
+        self.activate_vpn_connection_path(&connection.path).await
     }
 
     async fn wait_for_wifi_activation(
@@ -585,7 +734,11 @@ impl NmDbusClient {
                 if state == NM_ACTIVE_CONNECTION_STATE_ACTIVATED && (id.is_empty() || id == ssid) {
                     return Ok(());
                 }
-                if matches!(state, 3 | 4) {
+                if matches!(
+                    state,
+                    NM_ACTIVE_CONNECTION_STATE_DEACTIVATING
+                        | NM_ACTIVE_CONNECTION_STATE_DEACTIVATED
+                ) {
                     break;
                 }
             }
@@ -1177,5 +1330,59 @@ impl NmDbusClient {
         Ok(devices.into_iter().any(|d| {
             d.state != NM_DEVICE_STATE_UNAVAILABLE && d.state != NM_DEVICE_STATE_UNMANAGED
         }))
+    }
+
+    pub async fn spawn_all_listeners(
+        &self,
+        state_tx: watch::Sender<u32>,
+        added_tx: watch::Sender<OwnedObjectPath>,
+        removed_tx: watch::Sender<OwnedObjectPath>,
+    ) -> Result<()> {
+        let nm = self.nm_proxy.clone();
+        tokio::spawn(async move {
+            let Ok(stream) = nm.receive_signal("StateChanged").await else { return };
+            tokio::pin!(stream);
+            loop {
+                let msg: Option<Message> =
+                    poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
+                let Some(msg) = msg else { break };
+                if let Ok(state) = msg.body().deserialize::<u32>() {
+                    log::debug!("NM StateChanged: {}", state);
+                    let _ = state_tx.send(state);
+                }
+            }
+        });
+
+        let nm = self.nm_proxy.clone();
+        tokio::spawn(async move {
+            let Ok(stream) = nm.receive_signal("DeviceAdded").await else { return };
+            tokio::pin!(stream);
+            loop {
+                let msg: Option<Message> =
+                    poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
+                let Some(msg) = msg else { break };
+                if let Ok(path) = msg.body().deserialize::<OwnedObjectPath>() {
+                    log::debug!("NM DeviceAdded: {}", path);
+                    let _ = added_tx.send(path);
+                }
+            }
+        });
+
+        let nm = self.nm_proxy.clone();
+        tokio::spawn(async move {
+            let Ok(stream) = nm.receive_signal("DeviceRemoved").await else { return };
+            tokio::pin!(stream);
+            loop {
+                let msg: Option<Message> =
+                    poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
+                let Some(msg) = msg else { break };
+                if let Ok(path) = msg.body().deserialize::<OwnedObjectPath>() {
+                    log::debug!("NM DeviceRemoved: {}", path);
+                    let _ = removed_tx.send(path);
+                }
+            }
+        });
+
+        Ok(())
     }
 }

@@ -1,5 +1,5 @@
-// File: ethernet_page.rs
-// Location: /src/ui/ethernet_page.rs
+// * ./src/ui/ethernet_page.rs
+
 //
 // Credits & Inspirations:
 // - GNOME Settings Network panel for UI/UX patterns
@@ -25,11 +25,8 @@ pub struct EthernetPage {
     connected_subtitle: gtk4::Label,
     list: gtk4::ListBox,
     empty_state: adw::StatusPage,
-    // Shared UI state - accessed only from the main thread.
     connections: Rc<RefCell<Vec<Connection>>>,
-    // Shared UI state - accessed only from the main thread.
     connected_connection: Rc<RefCell<Option<Connection>>>,
-    // Shared UI state - accessed only from the main thread.
     ethernet_devices: Rc<RefCell<Vec<String>>>,
 }
 
@@ -182,9 +179,9 @@ impl EthernetPage {
             connected_subtitle: connected_subtitle.clone(),
             list: list.clone(),
             empty_state: empty_state.clone(),
-            connections,
-            connected_connection,
-            ethernet_devices,
+            connections: connections.clone(),
+            connected_connection: connected_connection.clone(),
+            ethernet_devices: ethernet_devices.clone(),
         };
 
         // Connected card context menu
@@ -271,30 +268,14 @@ impl EthernetPage {
                     .filter(|d| d.device_type == DeviceType::Ethernet)
                     .map(|d| d.name)
                     .collect::<Vec<_>>();
-                debug_assert!(
-                    self.ethernet_devices.try_borrow_mut().is_ok(),
-                    "Shared state borrow conflict: ethernet_devices_set"
-                );
-                if let Ok(mut ethernet_devices) = self.ethernet_devices.try_borrow_mut() {
-                    *ethernet_devices = ethernet;
-                } else {
-                    log::error!("Borrow conflict in UI state");
-                }
+                *self.ethernet_devices.borrow_mut() = ethernet;
             }
             Err(e) => {
                 log::warn!("Failed to get devices: {}", e);
                 if nm::is_nmcli_retrieval_error(&e.to_string()) {
                     self.show_toast(nm::NMCLI_RETRIEVAL_TOAST);
                 }
-                debug_assert!(
-                    self.ethernet_devices.try_borrow_mut().is_ok(),
-                    "Shared state borrow conflict: ethernet_devices_clear"
-                );
-                if let Ok(mut ethernet_devices) = self.ethernet_devices.try_borrow_mut() {
-                    ethernet_devices.clear();
-                } else {
-                    log::error!("Borrow conflict in UI state");
-                }
+                self.ethernet_devices.borrow_mut().clear();
             }
         }
 
@@ -313,15 +294,7 @@ impl EthernetPage {
                         a.name.cmp(&b.name)
                     }
                 });
-                debug_assert!(
-                    self.connections.try_borrow_mut().is_ok(),
-                    "Shared state borrow conflict: connections_set"
-                );
-                if let Ok(mut connections) = self.connections.try_borrow_mut() {
-                    *connections = wired.clone();
-                } else {
-                    log::error!("Borrow conflict in UI state");
-                }
+                *self.connections.borrow_mut() = wired.clone();
                 self.populate_connections(wired);
             }
             Err(e) => {
@@ -329,7 +302,6 @@ impl EthernetPage {
                 if nm::is_nmcli_retrieval_error(&e.to_string()) {
                     self.show_toast(nm::NMCLI_RETRIEVAL_TOAST);
                 } else {
-                    // * Avoid generic refresh errors by naming the failing ethernet operation.
                     self.show_toast(&format!("Failed to refresh Ethernet connections: {}", e));
                 }
                 self.populate_connections(Vec::new());
@@ -371,16 +343,7 @@ impl EthernetPage {
 
         let connected = connections.iter().find(|c| c.active).cloned();
         if let Some(ref conn) = connected {
-            debug_assert!(
-                self.connected_connection.try_borrow_mut().is_ok(),
-                "Shared state borrow conflict: connected_connection_set"
-            );
-            if let Ok(mut connected_connection) = self.connected_connection.try_borrow_mut() {
-                *connected_connection = Some(conn.clone());
-            } else {
-                log::error!("Borrow conflict in UI state");
-                return;
-            }
+            *self.connected_connection.borrow_mut() = Some(conn.clone());
             self.update_connected_card(conn);
             self.connected_card.set_visible(true);
             self.connected_card.add_css_class("fade-in");
@@ -416,16 +379,7 @@ impl EthernetPage {
             self.list.remove(&child);
         }
         self.connected_card.set_visible(false);
-        debug_assert!(
-            self.connected_connection.try_borrow_mut().is_ok(),
-            "Shared state borrow conflict: connected_connection_clear"
-        );
-        if let Ok(mut connected_connection) = self.connected_connection.try_borrow_mut() {
-            connected_connection.take();
-        } else {
-            log::error!("Borrow conflict in UI state");
-            return;
-        }
+        *self.connected_connection.borrow_mut() = None;
         self.empty_state.set_visible(true);
     }
 

@@ -1,3 +1,5 @@
+// * ./src/lib.rs
+
 use chrono::Local;
 use gtk4::prelude::*;
 use libadwaita as adw;
@@ -24,8 +26,10 @@ mod window;
 const APP_ID: &str = "com.github.adw-network";
 
 fn normalize_gsk_renderer_env() {
+    // * Critical for wlroots/Hyprland — ngl renderer crashes on some compositors
     if matches!(std::env::var("GSK_RENDERER").ok().as_deref(), Some("ngl")) {
         std::env::set_var("GSK_RENDERER", "gl");
+        log::info!("GSK_RENDERER overridden: ngl → gl (wlroots compat)");
     }
 }
 
@@ -82,19 +86,69 @@ fn setup_logging() {
     }
 }
 
+fn register_cleanup_signals() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
+
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = sigterm.recv() => {
+                log::info!("Received SIGTERM — cleaning up hotspot rules");
+                cleanup_hotspot_on_exit().await;
+                gtk4::Application::default().quit();
+            }
+            _ = sigint.recv() => {
+                log::info!("Received SIGINT — cleaning up hotspot rules");
+                cleanup_hotspot_on_exit().await;
+                gtk4::Application::default().quit();
+            }
+        }
+    });
+}
+
+async fn cleanup_hotspot_on_exit() {
+    if let Ok(Some(iface)) = crate::hotspot::get_hotspot_interface().await {
+        log::info!("Cleaning up hotspot rules on interface: {}", iface);
+        if let Err(e) = crate::hotspot::stop_hotspot().await {
+            log::error!("Failed to cleanup hotspot on exit: {}", e);
+        }
+    }
+}
+
 pub fn run() -> glib::ExitCode {
     normalize_gsk_renderer_env();
     setup_logging();
     log::info!("Application starting...");
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("Failed to create Tokio runtime: {}", e);
+            return glib::ExitCode::FAILURE;
+        }
+    };
     let _guard = rt.enter();
+
+    rt.block_on(async {
+        if let Err(e) = nm::init_signal_listeners().await {
+            log::warn!("Failed to initialize NM signal listeners (polling fallback active): {}", e);
+        }
+    });
+
     hotspot::spawn_runtime_daemon();
+
+    register_cleanup_signals();
 
     let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(build_ui);
-    app.run()
+    let result = app.run();
+
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+
+    result
 }
 
 fn build_ui(app: &adw::Application) {
