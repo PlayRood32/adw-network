@@ -1,6 +1,6 @@
 {
   "app-id": "com.github.adw-network",
-  "x-version": "1.0.0",
+  "x-version": "1.0.1",
   "runtime": "org.gnome.Platform",
   "runtime-version": "47",
   "sdk": "org.gnome.Sdk",

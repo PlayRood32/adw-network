@@ -1,4 +1,4 @@
--e // * ./src/nm_dbus.rs
+// * ./src/nm_dbus.rs
 
 use anyhow::{anyhow, Context, Result};
 use futures_core::Stream;
