@@ -1,4 +1,4 @@
--e // * ./src/nm.rs
+// * ./src/nm.rs
 
 use anyhow::{anyhow, Result};
 use std::cmp::Ordering as CmpOrdering;

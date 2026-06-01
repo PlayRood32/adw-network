@@ -22,7 +22,7 @@ Adwaita Network focuses on three things:
 - a hotspot workflow that feels native on the desktop
 - per-device hotspot control without dropping to shell scripts
 
-Current app version: `1.0.0`
+Current app version: `1.0.1`
 
 ## 🖼️ Screenshots
 
@@ -309,7 +309,8 @@ Use `Settings` to control:
 │   │       └── 📁 scalable
 │   │           └── 📁 apps
 │   │               └── 🖼️ icon.png
-│   └── 📄 com.github.adw-network.desktop
+│   ├── 📄 com.github.adw-network.desktop
+│   └── 📄 com.github.adw-network.policy
 ├── 📁 docs
 │   └── 📁 images
 │       ├── 🖼️ screenshot-1.png
@@ -317,7 +318,7 @@ Use `Settings` to control:
 │       └── 🖼️ screenshot-3.png
 ├── 📁 src
 │   ├── 📁 ui
-│   │   ├── 🦀 hotspot_page
+│   │   ├── 📁 hotspot_page
 │   │   │   ├── 🦀 actions.rs
 │   │   │   ├── 🦀 mod.rs
 │   │   │   └── 🦀 password.rs
@@ -337,6 +338,7 @@ Use `Settings` to control:
 │   ├── 🦀 leases.rs
 │   ├── 🦀 lib.rs
 │   ├── 🦀 main.rs
+│   ├── 🦀 models.rs
 │   ├── 🦀 modem_manager.rs
 │   ├── 🦀 nm_dbus.rs
 │   ├── 🦀 nm.rs
@@ -346,6 +348,7 @@ Use `Settings` to control:
 │   ├── 🦀 secrets.rs
 │   ├── 🦀 state.rs
 │   └── 🦀 window.rs
+├── 📦 Cargo.lock
 ├── 📦🦀 Cargo.toml
 ├── ⚙️ com.github.adw-network.json
 ├── ⚖️ LICENSE
