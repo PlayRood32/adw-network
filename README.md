@@ -22,7 +22,7 @@ Adwaita Network focuses on three things:
 - a hotspot workflow that feels native on the desktop
 - per-device hotspot control without dropping to shell scripts
 
-Current app version: `1.0.1`
+Current app version: `1.0.2`
 
 ## 🖼️ Screenshots
 
