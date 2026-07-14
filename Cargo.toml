@@ -1,6 +1,6 @@
 [package]
 name = "adwaita-network"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "Modern network management application for GNOME"
 license = "GPL-3.0-or-later"
@@ -26,7 +26,9 @@ chrono = "0.4.44"
 tempfile = "3.27.0"
 hostname = "0.4.2"
 keyring = "3.6.3"
-uuid = { version = "1.23.0", features = ["serde", "v4"] }
+# * #47, #55 — v5 added for deterministic connection UUIDs and unique nft temp file names.
+futures = "0.3"
+uuid = { version = "1.23.0", features = ["serde", "v4", "v5"] }
 futures-core = "0.3.32"
 zbus = { version = "5.14.0", default-features = false, features = ["tokio"] }
 zvariant = "5.9.2"
