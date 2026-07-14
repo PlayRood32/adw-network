@@ -230,13 +230,13 @@ or for Arch btw users
 
 Stable:
 ```bash
-yay -S adw-network
+yay -S adw-network-git
 ```
 
 or
 
 ```bash
-paru -S adw-network
+paru -S adw-network-git
 ```
 
 Latest binary package (AUR - bin):
